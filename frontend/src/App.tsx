@@ -285,6 +285,30 @@ function App() {
     }
   }
 
+  const getFriendlyAiError = (rawMessage?: string) => {
+    if (!rawMessage) {
+      return 'Ошибка анализа. Повторите попытку.'
+    }
+
+    if (rawMessage.includes('Достигнут лимит запросов Gemini')) {
+      return 'Достигнут лимит запросов Gemini. Повторите позже.'
+    }
+
+    if (rawMessage.includes('Gemini временно перегружен')) {
+      return 'Gemini временно перегружен. Повторите анализ через минуту.'
+    }
+
+    if (rawMessage.includes('Не удалось получить анализ Gemini')) {
+      return 'Не удалось получить анализ Gemini. Попробуйте позже.'
+    }
+
+    if (rawMessage.length > 120) {
+      return 'Ошибка анализа. Повторите попытку.'
+    }
+
+    return rawMessage
+  }
+
   const analyzeNow = async () => {
     setAiLoading(true)
     setAiError(null)
@@ -299,7 +323,7 @@ function App() {
       setAiResult(data)
       setAiTime(new Date().toLocaleString())
     } catch (e: any) {
-      setAiError(e?.message || 'Failed to run analysis')
+      setAiError(getFriendlyAiError(e?.message || ''))
     } finally {
       setAiLoading(false)
     }

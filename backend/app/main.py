@@ -141,6 +141,53 @@ def normalize_gemini_response(parsed: dict) -> dict:
     return parsed
 
 
+def _extract_gemini_status(exc: Exception) -> int | None:
+    for key in ("status_code", "code", "status"):
+        if hasattr(exc, key):
+            value = getattr(exc, key)
+            try:
+                return int(value)
+            except Exception:
+                pass
+
+    message = str(exc)
+    if "429" in message:
+        return 429
+    if "504" in message:
+        return 504
+    if "503" in message or "UNAVAILABLE" in message.upper() or "HIGH DEMAND" in message.upper():
+        return 503
+    if "500" in message:
+        return 500
+    return None
+
+
+def _is_gemini_retryable(exc: Exception) -> bool:
+    status = _extract_gemini_status(exc)
+    return status in (500, 503, 504)
+
+
+async def _generate_content_with_retry(client, model_name: str, contents: list) -> object:
+    delays = [2, 5]
+    for attempt in range(len(delays) + 1):
+        try:
+            return client.models.generate_content(model=model_name, contents=contents)
+        except Exception as exc:
+            status = _extract_gemini_status(exc)
+            message = str(exc)
+
+            if status == 429 or "429" in message:
+                raise HTTPException(status_code=429, detail="Достигнут лимит запросов Gemini. Повторите позже.")
+
+            if not _is_gemini_retryable(exc):
+                raise HTTPException(status_code=502, detail="Не удалось получить анализ Gemini. Попробуйте позже.")
+
+            if attempt == len(delays):
+                raise HTTPException(status_code=503, detail="Gemini временно перегружен. Повторите анализ через минуту.")
+
+            await asyncio.sleep(delays[attempt])
+
+
 async def fetch_candles(symbol: str, timeframe: str = "1h", limit: int = 102) -> tuple[list, str]:
     source = "bybit"
     try:
@@ -217,12 +264,11 @@ async def get_gemini_analysis(symbol: str, timeframe: str = "1h") -> dict:
     )
 
     try:
-        response = client.models.generate_content(
-            model=model_name,
-            contents=[image_part, prompt]
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"GenAI request failed: {exc}")
+        response = await _generate_content_with_retry(client, model_name, [image_part, prompt])
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=502, detail="Не удалось получить анализ Gemini. Попробуйте позже.")
 
     text = None
     try:
