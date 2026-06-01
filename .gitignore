@@ -1,0 +1,14 @@
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+.env
+**/.env
+.env.local
+**/.env.local
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.venv/
+venv/
+chart.png
