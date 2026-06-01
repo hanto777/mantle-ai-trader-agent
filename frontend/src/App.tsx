@@ -77,7 +77,7 @@ function App() {
   const chartContainerRef = useRef<HTMLDivElement | null>(null)
   const [candles, setCandles] = useState<Candle[]>([])
   const [latestPrice, setLatestPrice] = useState<number | null>(null)
-  const [marketInfo, setMarketInfo] = useState({ symbol: 'MNT/USDT', exchange: 'Bybit Spot', timeframe: '1H' })
+  const [marketInfo, setMarketInfo] = useState({ symbol: 'MNT/USDT', exchange: 'Loading source...', timeframe: '1H' })
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [aiLoading, setAiLoading] = useState(false)
@@ -558,7 +558,7 @@ function App() {
             )}
             <div className="mt-5 flex flex-wrap gap-3 text-sm text-slate-400">
               <span className="rounded-full border border-slate-700 px-3 py-1">1H</span>
-              <span className="rounded-full border border-slate-700 px-3 py-1">Bybit Spot</span>
+              <span className="rounded-full border border-slate-700 px-3 py-1">{marketInfo.exchange}</span>
               <span className="rounded-full border border-slate-700 px-3 py-1">MNT/USDT</span>
             </div>
           </div>
@@ -568,7 +568,7 @@ function App() {
               <p className="text-sm uppercase tracking-[0.35em] text-slate-400">Market analysis</p>
               <h2 className="mt-3 text-2xl font-semibold text-white">Price momentum overview</h2>
               <p className="mt-4 text-sm leading-6 text-slate-300">
-                Live Bybit candlestick data for the selected spot pair in an easy-to-read trading interface.
+                Live {marketInfo.exchange} candlestick data for the selected spot pair in an easy-to-read trading interface.
               </p>
               <div className="mt-6 space-y-3 rounded-3xl bg-slate-900/80 p-4 text-sm text-slate-300">
                 {aiLoading ? (

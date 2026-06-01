@@ -141,16 +141,32 @@ def normalize_gemini_response(parsed: dict) -> dict:
     return parsed
 
 
-async def fetch_candles(symbol: str, timeframe: str = "1h", limit: int = 102) -> list:
-    exchange = ccxt.bybit({"enableRateLimit": True})
-    exchange.options["defaultType"] = "spot"
+async def fetch_candles(symbol: str, timeframe: str = "1h", limit: int = 102) -> tuple[list, str]:
+    source = "bybit"
     try:
+        exchange = ccxt.bybit({"enableRateLimit": True})
+        exchange.options["defaultType"] = "spot"
         ohlcv = await run_in_threadpool(exchange.fetch_ohlcv, symbol, timeframe, None, limit)
         if not ohlcv or len(ohlcv) < 2:
-            raise ValueError("Insufficient candle data")
-        return ohlcv[:-1]  # exclude last unclosed
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Failed to fetch candles: {e}")
+            raise ValueError("Insufficient candle data from Bybit")
+        return ohlcv[:-1], source
+    except Exception as bybit_error:
+        try:
+            source = "bingx"
+            exchange = ccxt.bingx({"enableRateLimit": True})
+            exchange.options["defaultType"] = "spot"
+            ohlcv = await run_in_threadpool(exchange.fetch_ohlcv, symbol, timeframe, None, limit)
+            if not ohlcv or len(ohlcv) < 2:
+                raise ValueError("Insufficient candle data from BingX")
+            return ohlcv[:-1], source
+        except Exception as bingx_error:
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    f"Failed to fetch candles from Bybit and BingX. "
+                    f"Bybit error: {bybit_error}; BingX error: {bingx_error}"
+                )
+            )
 
 
 async def get_gemini_analysis(symbol: str, timeframe: str = "1h") -> dict:
@@ -162,7 +178,7 @@ async def get_gemini_analysis(symbol: str, timeframe: str = "1h") -> dict:
         raise HTTPException(status_code=400, detail="GEMINI_API_KEY not configured")
 
     # Fetch last 100 candles
-    ohlcv = await fetch_candles(symbol, timeframe, 101)
+    ohlcv, _ = await fetch_candles(symbol, timeframe, 101)
     if len(ohlcv) < 100:
         raise HTTPException(status_code=502, detail="Insufficient closed candles for analysis")
 
@@ -362,7 +378,7 @@ async def agent_loop():
                 print(f"Trade closed: {close_info}")
 
             # Get current candles to check if we need new analysis
-            current_ohlcv = await fetch_candles(symbol, "1h", 2)
+            current_ohlcv, _ = await fetch_candles(symbol, "1h", 2)
             if len(current_ohlcv) >= 1:
                 current_candle_ts = current_ohlcv[-1][0]
                 
@@ -413,7 +429,7 @@ async def health():
 @app.get("/api/market/candles")
 async def get_market_candles():
     symbol = os.getenv("TRADING_SYMBOL", os.getenv("SYMBOL", "MNT/USDT"))
-    ohlcv = await fetch_candles(symbol, "1h", 102)
+    ohlcv, source = await fetch_candles(symbol, "1h", 102)
     
     closed_candles = ohlcv
     candles = [
@@ -428,9 +444,11 @@ async def get_market_candles():
         for row in closed_candles
     ]
 
+    display_name = "Bybit Spot" if source == "bybit" else "BingX Spot"
     return {
         "symbol": symbol,
-        "exchange": "Bybit Spot",
+        "exchange": display_name,
+        "source": source,
         "timeframe": "1H",
         "candles": candles,
     }
