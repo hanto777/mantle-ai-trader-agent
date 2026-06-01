@@ -151,6 +151,8 @@ async def fetch_candles(symbol: str, timeframe: str = "1h", limit: int = 102) ->
             raise ValueError("Insufficient candle data from Bybit")
         return ohlcv[:-1], source
     except Exception as bybit_error:
+        if not hasattr(ccxt, "bingx"):
+            raise RuntimeError("Installed ccxt version does not support BingX")
         try:
             source = "bingx"
             exchange = ccxt.bingx({"enableRateLimit": True})
