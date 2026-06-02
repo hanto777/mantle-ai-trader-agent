@@ -27,6 +27,11 @@ type AIResult = {
   resistance_price: number
   confidence: number
   reason: string
+  analyzed_at?: string
+  model?: string
+  candles_last_timestamp?: number
+  stale?: boolean
+  warning?: string
 }
 
 type Trade = {
@@ -156,6 +161,26 @@ function App() {
       }
       const data = (await response.json()) as AgentStatusResponse
       setAccount(data.account)
+      // If server has a last successful analysis, use it to populate UI
+      if (data.account?.last_analysis) {
+        const la = data.account.last_analysis as any
+        setAiResult({
+          action: la.action,
+          support_price: la.support_price,
+          resistance_price: la.resistance_price,
+          confidence: la.confidence,
+          reason: la.reason,
+          analyzed_at: la.analyzed_at,
+          model: la.model,
+          candles_last_timestamp: la.candles_last_timestamp,
+          stale: false,
+        })
+        if (la.analyzed_at) {
+          setAiTime(new Date(la.analyzed_at).toLocaleString())
+        } else if (la.candles_last_timestamp) {
+          setAiTime(new Date(la.candles_last_timestamp).toLocaleString())
+        }
+      }
     } catch (err: any) {
       setStatusError(err?.message || 'Failed to load agent status')
     } finally {
@@ -312,7 +337,6 @@ function App() {
   const analyzeNow = async () => {
     setAiLoading(true)
     setAiError(null)
-    setAiResult(null)
     try {
       const res = await fetch(`${apiBase}/api/ai/analyze`, { method: 'POST' })
       if (!res.ok) {
@@ -321,7 +345,13 @@ function App() {
       }
       const data = (await res.json()) as AIResult
       setAiResult(data)
-      setAiTime(new Date().toLocaleString())
+      if ((data as any).analyzed_at) {
+        setAiTime(new Date((data as any).analyzed_at).toLocaleString())
+      } else if ((data as any).candles_last_timestamp) {
+        setAiTime(new Date((data as any).candles_last_timestamp).toLocaleString())
+      } else {
+        setAiTime(new Date().toLocaleString())
+      }
     } catch (e: any) {
       setAiError(getFriendlyAiError(e?.message || ''))
     } finally {
@@ -411,6 +441,7 @@ function App() {
   // --- Contract interaction ---
   const recordAiSignalOnChain = async () => {
     if (!aiResult) return
+    if ((aiResult as any).stale) return alert('Cannot record stale analysis on-chain')
     if (!walletAddress) return alert('Connect your wallet first')
     if (!isCorrectNetwork) return alert('Switch to Mantle Sepolia network')
 
@@ -601,6 +632,9 @@ function App() {
                   <div className="py-4 text-center text-red-300">Analysis error: {aiError}</div>
                 ) : aiResult ? (
                   <div className="space-y-3">
+                    { (aiResult as any).stale && (
+                      <div className="mb-2 inline-block rounded-full bg-yellow-400/10 px-3 py-1 text-xs font-semibold text-yellow-300">Cached analysis</div>
+                    ) }
                     <div className="flex items-center justify-between">
                       <span className="font-medium">Signal</span>
                       <span className={aiResult.action === 'BUY' ? 'text-emerald-400' : 'text-slate-300'}>{aiResult.action}</span>
@@ -619,6 +653,9 @@ function App() {
                     </div>
                     <div>
                       <p className="text-sm text-slate-300">{aiResult.reason}</p>
+                      { (aiResult as any).stale && (
+                        <p className="mt-2 text-xs text-yellow-300">Gemini temporarily unavailable. Displaying the latest verified analysis.</p>
+                      ) }
                       {aiTime && <p className="mt-2 text-xs text-slate-400">Updated: {aiTime}</p>}
                     </div>
                   </div>
