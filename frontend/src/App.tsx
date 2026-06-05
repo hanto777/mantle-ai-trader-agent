@@ -133,6 +133,7 @@ function App() {
   const [creditsError, setCreditsError] = useState<string | null>(null)
   const [depositLoading, setDepositLoading] = useState(false)
   const [showAllSignals, setShowAllSignals] = useState(false)
+  const [reasoningStepIndex, setReasoningStepIndex] = useState(0)
 
   const creditVaultConfigured = Boolean(ANALYSIS_CREDIT_VAULT_ADDRESS)
   const creditsRequired = billingStatus?.credit_required_for_analysis ?? ANALYSIS_CREDIT_REQUIRED
@@ -692,6 +693,19 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [walletAddress, isCorrectNetwork])
 
+  useEffect(() => {
+    if (!aiLoading) {
+      setReasoningStepIndex(0)
+      return
+    }
+
+    const timer = window.setInterval(() => {
+      setReasoningStepIndex((current) => (current + 1) % 5)
+    }, 850)
+
+    return () => window.clearInterval(timer)
+  }, [aiLoading])
+
   const confidencePercent = aiResult ? Math.round(aiResult.confidence * 100) : 0
   const supportLevel = aiResult?.support_price ?? null
   const resistanceLevel = aiResult?.resistance_price ?? null
@@ -704,6 +718,12 @@ function App() {
   const canAnalyze = Boolean(walletAddress && isCorrectNetwork && (credits ?? 0) >= creditsRequired && !aiLoading)
   const verifiedContractUrl = `https://sepolia.mantlescan.xyz/address/${TRADE_SIGNAL_REGISTRY_ADDRESS}#code`
   const reasoningPhase = aiLoading ? 'processing' : aiError ? 'error' : aiResult ? 'complete' : 'idle'
+  const getReasoningState = (index: number) => {
+    if (aiResult) return 'done'
+    if (!aiLoading) return 'idle'
+    if (index === reasoningStepIndex) return 'active'
+    return index < reasoningStepIndex ? 'done' : 'queued'
+  }
   const decisionSummary = aiResult
     ? `${aiResult.action} with ${confidencePercent}% confidence. Credit was spent only after Gemini returned this signal.`
     : aiLoading
@@ -718,7 +738,7 @@ function App() {
           ? 'Scanning trend direction, impulse candles, and local swing points'
           : 'Waiting for fresh Gemini chart scan',
       tone: 'cyan',
-      state: aiResult ? 'done' : aiLoading ? 'active' : 'idle',
+      state: getReasoningState(0),
     },
     {
       label: 'Support zone',
@@ -728,7 +748,7 @@ function App() {
           ? 'Mapping recent lows and failed breakdown areas'
           : 'Support will be mapped after analysis',
       tone: 'cyan',
-      state: supportLevel ? 'done' : aiLoading ? 'active' : 'idle',
+      state: getReasoningState(1),
     },
     {
       label: 'Resistance zone',
@@ -738,7 +758,7 @@ function App() {
           ? 'Checking prior highs, rejection candles, and likely take-profit ceiling'
           : 'Resistance will be mapped after analysis',
       tone: 'amber',
-      state: resistanceLevel ? 'done' : aiLoading ? 'active' : 'idle',
+      state: getReasoningState(2),
     },
     {
       label: 'Volume context',
@@ -746,13 +766,13 @@ function App() {
         ? `${Math.round(totalVolume).toLocaleString()} total visible volume is compared with recent price movement`
         : 'Loading market volume',
       tone: 'cyan',
-      state: aiLoading || candles.length ? 'done' : 'idle',
+      state: getReasoningState(3),
     },
     {
       label: 'Decision',
       value: aiResult?.reason || decisionSummary,
       tone: aiResult?.action === 'BUY' ? 'green' : 'cyan',
-      state: aiResult ? 'done' : aiLoading ? 'active' : 'idle',
+      state: getReasoningState(4),
     },
   ]
 
@@ -871,6 +891,15 @@ function App() {
             </div>
 
             <div className={`ai-core grid-bg ${aiLoading ? 'is-thinking' : ''}`}>
+              <video
+                className="ai-robot-video"
+                src="/ai-robot.mp4"
+                autoPlay
+                muted
+                loop
+                playsInline
+                preload="metadata"
+              />
               {aiLoading && <div className="scan-beam" />}
               {aiLoading && <div className="core-particles"><i /><i /><i /><i /><i /></div>}
               <div className="ai-orbit"><span /></div>
@@ -885,7 +914,9 @@ function App() {
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center justify-between gap-4">
                       <span className="text-xs font-semibold uppercase tracking-wide text-slate-100">{step.label}</span>
-                      <span className="font-mono text-[9px] text-slate-500">{step.state === 'done' ? 'mapped' : step.state === 'active' ? 'scanning' : `step ${index + 1}/5`}</span>
+                      <span className="font-mono text-[9px] text-slate-500">
+                        {step.state === 'done' ? 'mapped' : step.state === 'active' ? 'scanning' : step.state === 'queued' ? 'queued' : `step ${index + 1}/5`}
+                      </span>
                     </div>
                     <p className="mt-1 line-clamp-2 font-mono text-xs leading-relaxed text-slate-400">{step.value}</p>
                   </div>
