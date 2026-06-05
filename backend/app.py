@@ -113,6 +113,7 @@ class AnalyzeRequest(BaseModel):
     wallet_address: str
     signature: str
     nonce: str
+    message: Optional[str] = None
 
 
 # ===== Global State =====
@@ -243,7 +244,7 @@ def get_billing_contract():
     )
 
 
-def verify_analysis_signature(wallet_address: str, signature: str, nonce: str, amount: int, symbol: str) -> str:
+def verify_analysis_signature(wallet_address: str, signature: str, nonce: str, amount: int, symbol: str, signed_message: Optional[str] = None) -> str:
     if Account is None or encode_defunct is None or Web3 is None:
         raise HTTPException(status_code=500, detail="eth-account SDK not available")
 
@@ -252,7 +253,39 @@ def verify_analysis_signature(wallet_address: str, signature: str, nonce: str, a
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid wallet address")
 
-    message = build_analysis_auth_message(checksum_wallet, amount, nonce, symbol)
+    message = signed_message or build_analysis_auth_message(checksum_wallet, amount, nonce, symbol)
+    expected_fields = {
+        "Wallet": checksum_wallet,
+        "Symbol": symbol,
+        "Credits": str(amount),
+        "Vault": get_credit_vault_address(),
+        "Network": "Mantle Sepolia",
+        "Nonce": nonce,
+    }
+    parsed_fields = {}
+    for line in message.splitlines():
+        if ": " not in line:
+            continue
+        key, value = line.split(": ", 1)
+        parsed_fields[key] = value
+
+    try:
+        if Web3.to_checksum_address(parsed_fields.get("Wallet", "")) != checksum_wallet:
+            raise ValueError("wallet mismatch")
+    except Exception:
+        raise HTTPException(status_code=401, detail="Signed wallet does not match requester")
+
+    if parsed_fields.get("Symbol") != expected_fields["Symbol"]:
+        raise HTTPException(status_code=401, detail="Signed symbol does not match request")
+    if parsed_fields.get("Credits") != expected_fields["Credits"]:
+        raise HTTPException(status_code=401, detail="Signed credit amount does not match request")
+    if parsed_fields.get("Nonce") != expected_fields["Nonce"]:
+        raise HTTPException(status_code=401, detail="Signed nonce does not match request")
+    if parsed_fields.get("Network") != expected_fields["Network"]:
+        raise HTTPException(status_code=401, detail="Signed network does not match request")
+    if parsed_fields.get("Vault", "").lower() != expected_fields["Vault"].lower():
+        raise HTTPException(status_code=401, detail="Signed vault does not match billing contract")
+
     try:
         recovered = Account.recover_message(encode_defunct(text=message), signature=signature)
     except Exception as exc:
@@ -643,6 +676,7 @@ async def ai_analyze(request: AnalyzeRequest):
         request.nonce,
         credit_amount,
         symbol,
+        request.message,
     )
     await run_in_threadpool(assert_billing_can_consume)
     balance = await run_in_threadpool(get_credit_balance, wallet_address)
