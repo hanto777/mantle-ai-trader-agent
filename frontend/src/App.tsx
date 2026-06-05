@@ -33,6 +33,8 @@ type AIResult = {
   candles_last_timestamp?: number
   stale?: boolean
   warning?: string
+  credits_consumed?: number
+  credit_consume_tx_hash?: string
 }
 
 type Trade = {
@@ -81,6 +83,7 @@ type BillingStatus = {
   credit_required_for_analysis: number
   contract_address: string | null
   auto_consume_enabled: boolean
+  signature_required?: boolean
   note: string
 }
 
@@ -366,10 +369,48 @@ function App() {
   }
 
   const analyzeNow = async () => {
+    if (!walletAddress) {
+      setAiError('Connect your wallet to spend AI credits.')
+      return
+    }
+    if (!isCorrectNetwork) {
+      setAiError('Switch to Mantle Sepolia before running analysis.')
+      return
+    }
+    if ((credits ?? 0) < creditsRequired) {
+      setAiError('Insufficient AI credits. Deposit test MNT for credits first.')
+      return
+    }
+
     setAiLoading(true)
     setAiError(null)
     try {
-      const res = await fetch(`${apiBase}/api/ai/analyze`, { method: 'POST' })
+      const eth = (window as any).ethereum
+      if (!eth) throw new Error('Wallet not found')
+      const provider = new ethers.BrowserProvider(eth)
+      const signer = await provider.getSigner()
+      const checksumWallet = ethers.getAddress(walletAddress)
+      const nonce = `${Date.now()}-${crypto.randomUUID()}`
+      const message = [
+        'Mantle AI Trader',
+        'Authorize AI analysis credit spend',
+        `Wallet: ${checksumWallet}`,
+        `Credits: ${creditsRequired}`,
+        `Vault: ${ANALYSIS_CREDIT_VAULT_ADDRESS}`,
+        'Network: Mantle Sepolia',
+        `Nonce: ${nonce}`,
+      ].join('\n')
+      const signature = await signer.signMessage(message)
+
+      const res = await fetch(`${apiBase}/api/ai/analyze`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          wallet_address: checksumWallet,
+          signature,
+          nonce,
+        }),
+      })
       if (!res.ok) {
         const txt = await res.text()
         throw new Error(txt || 'AI analyze failed')
@@ -383,6 +424,7 @@ function App() {
       } else {
         setAiTime(new Date().toLocaleString())
       }
+      await loadCreditBalance()
     } catch (e: any) {
       setAiError(getFriendlyAiError(e?.message || ''))
     } finally {
@@ -782,7 +824,7 @@ function App() {
                 Live {marketInfo.exchange} candlestick data for the selected spot pair in an easy-to-read trading interface.
               </p>
               <div className="mt-4 rounded-2xl border border-slate-700 bg-slate-950/60 p-3 text-sm text-slate-300">
-                Analyze Now requires {creditsRequired} demo AI credit. Credits are displayed from Mantle Sepolia, but this MVP does not auto-consume them yet.
+                Analyze Now requires {creditsRequired} demo AI credit and a wallet signature. Credits are consumed on Mantle Sepolia after Gemini returns an analysis.
               </div>
               {walletAddress && credits === 0 && (
                 <div className="mt-3 rounded-2xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200">
@@ -817,6 +859,16 @@ function App() {
                     </div>
                     <div>
                       <p className="text-sm text-slate-300">{aiResult.reason}</p>
+                      {aiResult.credits_consumed && (
+                        <p className="mt-2 text-xs text-emerald-300">
+                          Consumed {aiResult.credits_consumed} AI credit{aiResult.credits_consumed === 1 ? '' : 's'}.
+                        </p>
+                      )}
+                      {aiResult.credit_consume_tx_hash && (
+                        <p className="mt-2 truncate text-xs text-slate-400">
+                          Credit tx: {aiResult.credit_consume_tx_hash}
+                        </p>
+                      )}
                       { (aiResult as any).stale && (
                         <p className="mt-2 text-xs text-yellow-300">Gemini temporarily unavailable. Displaying the latest verified analysis.</p>
                       ) }
@@ -839,7 +891,7 @@ function App() {
                 )}
                 <button
                   onClick={analyzeNow}
-                  disabled={aiLoading}
+                  disabled={aiLoading || !walletAddress || !isCorrectNetwork || (credits ?? 0) < creditsRequired}
                   className="rounded-2xl bg-slate-800 px-4 py-3 text-sm font-semibold text-slate-100 transition disabled:opacity-60"
                 >
                   {aiLoading ? 'Analyzing…' : 'Analyze Now'}
