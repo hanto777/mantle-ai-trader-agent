@@ -6,6 +6,15 @@ import { AnalysisCreditVaultABI, ANALYSIS_CREDIT_DEPOSIT_AMOUNT_MNT, ANALYSIS_CR
 
 const apiBase = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000'
 
+const MARKETS = [
+  { symbol: 'MNT/USDT', label: 'MNT', tone: 'Mantle native' },
+  { symbol: 'BTC/USDT', label: 'BTC', tone: 'Macro king' },
+  { symbol: 'ETH/USDT', label: 'ETH', tone: 'L1 pulse' },
+  { symbol: 'SOL/USDT', label: 'SOL', tone: 'High beta' },
+  { symbol: 'ARB/USDT', label: 'ARB', tone: 'L2 watch' },
+  { symbol: 'OP/USDT', label: 'OP', tone: 'L2 watch' },
+] as const
+
 type Candle = {
   timestamp: number
   open: number
@@ -93,6 +102,7 @@ function formatCurrency(value: number) {
 
 function App() {
   const chartContainerRef = useRef<HTMLDivElement | null>(null)
+  const [selectedSymbol, setSelectedSymbol] = useState('MNT/USDT')
   const [candles, setCandles] = useState<Candle[]>([])
   const [latestPrice, setLatestPrice] = useState<number | null>(null)
   const [marketInfo, setMarketInfo] = useState({ symbol: 'MNT/USDT', exchange: 'Loading source...', timeframe: '1H' })
@@ -122,16 +132,22 @@ function App() {
   const [creditsLoading, setCreditsLoading] = useState(false)
   const [creditsError, setCreditsError] = useState<string | null>(null)
   const [depositLoading, setDepositLoading] = useState(false)
+  const [showAllSignals, setShowAllSignals] = useState(false)
 
   const creditVaultConfigured = Boolean(ANALYSIS_CREDIT_VAULT_ADDRESS)
   const creditsRequired = billingStatus?.credit_required_for_analysis ?? ANALYSIS_CREDIT_REQUIRED
+  const selectedMarket = MARKETS.find((market) => market.symbol === selectedSymbol) ?? MARKETS[0]
+  const displayedSignals = useMemo(
+    () => (showAllSignals ? signals : signals.slice(0, 4)),
+    [showAllSignals, signals]
+  )
 
   const stats = useMemo(() => {
     if (!account) {
       return [
-        { label: 'Balance', value: '$0.00', trend: '—' },
-        { label: 'Equity', value: '$0.00', trend: '—' },
-        { label: 'Position', value: 'No position', trend: '—' },
+        { label: 'Balance', value: '$0.00', trend: '-' },
+        { label: 'Equity', value: '$0.00', trend: '-' },
+        { label: 'Position', value: 'No position', trend: '-' },
         { label: 'Cooldown', value: '0', trend: 'hours' },
       ]
     }
@@ -153,7 +169,7 @@ function App() {
     setError(null)
 
     try {
-      const response = await fetch(`${apiBase}/api/market/candles`)
+      const response = await fetch(`${apiBase}/api/market/candles?symbol=${encodeURIComponent(selectedSymbol)}`)
       if (!response.ok) {
         const text = await response.text()
         throw new Error(text || 'Failed to fetch candles')
@@ -240,15 +256,22 @@ function App() {
   }
 
   useEffect(() => {
+    setCandles([])
+    setLatestPrice(null)
+    setAiResult(null)
+    setAiTime(null)
+    setAiError(null)
     refreshAll()
-  }, [])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedSymbol])
 
   useEffect(() => {
     if (!chartContainerRef.current) return
 
+    const chartHeight = chartContainerRef.current.clientHeight || 520
     const chart = createChart(chartContainerRef.current, {
       width: chartContainerRef.current.clientWidth,
-      height: 360,
+      height: chartHeight,
       layout: {
         background: { color: '#07101f' },
         textColor: '#cbd5e1',
@@ -300,7 +323,11 @@ function App() {
     }
 
     const handleResize = () => {
-      chart.applyOptions({ width: chartContainerRef.current?.clientWidth ?? 0 })
+      if (!chartContainerRef.current) return
+      chart.applyOptions({
+        width: chartContainerRef.current.clientWidth,
+        height: chartContainerRef.current.clientHeight || chartHeight,
+      })
     }
 
     window.addEventListener('resize', handleResize)
@@ -346,26 +373,38 @@ function App() {
 
   const getFriendlyAiError = (rawMessage?: string) => {
     if (!rawMessage) {
-      return 'Ошибка анализа. Повторите попытку.'
+      return 'Analysis failed. Please try again.'
     }
 
-    if (rawMessage.includes('Достигнут лимит запросов Gemini')) {
-      return 'Достигнут лимит запросов Gemini. Повторите позже.'
+    let message = rawMessage
+    try {
+      const parsed = JSON.parse(rawMessage)
+      message = parsed?.detail || parsed?.message || rawMessage
+    } catch {
+      // Plain text errors are expected from fetch/network failures.
     }
 
-    if (rawMessage.includes('Gemini временно перегружен')) {
-      return 'Gemini временно перегружен. Повторите анализ через минуту.'
+    if (message.includes('Wallet signature does not match requester')) {
+      return 'Wallet signature does not match the connected wallet. Reconnect wallet and try again.'
     }
 
-    if (rawMessage.includes('Не удалось получить анализ Gemini')) {
-      return 'Не удалось получить анализ Gemini. Попробуйте позже.'
+    if (message.includes('Gemini request limit') || message.includes('429')) {
+      return 'Gemini request limit reached. Please try again later.'
     }
 
-    if (rawMessage.length > 120) {
-      return 'Ошибка анализа. Повторите попытку.'
+    if (message.includes('Gemini temporarily overloaded') || message.includes('503')) {
+      return 'Gemini is temporarily overloaded. Try again in a minute.'
     }
 
-    return rawMessage
+    if (message.includes('Failed to fetch Gemini analysis') || message.includes('502')) {
+      return 'Failed to fetch Gemini analysis. Please try again later.'
+    }
+
+    if (message.length > 120) {
+      return 'Analysis failed. Please try again.'
+    }
+
+    return message
   }
 
   const analyzeNow = async () => {
@@ -389,12 +428,17 @@ function App() {
       if (!eth) throw new Error('Wallet not found')
       const provider = new ethers.BrowserProvider(eth)
       const signer = await provider.getSigner()
-      const checksumWallet = ethers.getAddress(walletAddress)
+      const checksumWallet = ethers.getAddress(await signer.getAddress())
+      if (checksumWallet !== ethers.getAddress(walletAddress)) {
+        setWalletAddress(checksumWallet)
+        setShortAddress(shorten(checksumWallet))
+      }
       const nonce = `${Date.now()}-${crypto.randomUUID()}`
       const message = [
         'Mantle AI Trader',
         'Authorize AI analysis credit spend',
         `Wallet: ${checksumWallet}`,
+        `Symbol: ${selectedSymbol}`,
         `Credits: ${creditsRequired}`,
         `Vault: ${ANALYSIS_CREDIT_VAULT_ADDRESS}`,
         'Network: Mantle Sepolia',
@@ -406,9 +450,11 @@ function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          symbol: selectedSymbol,
           wallet_address: checksumWallet,
           signature,
           nonce,
+          message,
         }),
       })
       if (!res.ok) {
@@ -530,7 +576,7 @@ function App() {
               chainId: MANTLE_SEPOLIA_CHAIN_ID_HEX,
               chainName: 'Mantle Sepolia',
               rpcUrls: [MANTLE_SEPOLIA_RPC],
-              nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 },
+              nativeCurrency: { name: 'MNT', symbol: 'MNT', decimals: 18 },
               blockExplorerUrls: ['https://explorer.sepolia.mantle.xyz']
             }]
           })
@@ -585,7 +631,7 @@ function App() {
       const signer = await provider.getSigner()
       const contract = new ethers.Contract(TRADE_SIGNAL_REGISTRY_ADDRESS, TradeSignalRegistryABI as any, signer) as any
 
-      const symbol = 'MNT/USDT'
+      const symbol = marketInfo.symbol || selectedSymbol
       const action = aiResult.action
       const price = Math.round((latestPrice ?? 0) * 1e8)
       const confidence = Math.round(aiResult.confidence * 100)
@@ -646,423 +692,369 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [walletAddress, isCorrectNetwork])
 
+  const confidencePercent = aiResult ? Math.round(aiResult.confidence * 100) : 0
+  const supportLevel = aiResult?.support_price ?? null
+  const resistanceLevel = aiResult?.resistance_price ?? null
+  const openTrade = trades?.open_trade ?? account?.open_trade ?? null
+  const totalVolume = candles.reduce((sum, candle) => sum + candle.volume, 0)
+  const firstClose = candles[0]?.close ?? latestPrice ?? 0
+  const marketChange = latestPrice && firstClose ? ((latestPrice - firstClose) / firstClose) * 100 : 0
+  const latestHigh = candles.length ? Math.max(...candles.slice(-24).map((c) => c.high)) : null
+  const latestLow = candles.length ? Math.min(...candles.slice(-24).map((c) => c.low)) : null
+  const canAnalyze = Boolean(walletAddress && isCorrectNetwork && (credits ?? 0) >= creditsRequired && !aiLoading)
+  const verifiedContractUrl = `https://sepolia.mantlescan.xyz/address/${TRADE_SIGNAL_REGISTRY_ADDRESS}#code`
+  const reasoningPhase = aiLoading ? 'processing' : aiError ? 'error' : aiResult ? 'complete' : 'idle'
+  const decisionSummary = aiResult
+    ? `${aiResult.action} with ${confidencePercent}% confidence. Credit was spent only after Gemini returned this signal.`
+    : aiLoading
+      ? 'Signed request accepted. Gemini is scanning market structure before the credit is consumed.'
+      : 'Agent waits for a signed Analyze Now request.'
+  const reasoningSteps = [
+    {
+      label: 'Market structure',
+      value: aiResult
+        ? `${aiResult.action} bias from Gemini chart vision using the latest ${marketInfo.timeframe} candles`
+        : aiLoading
+          ? 'Scanning trend direction, impulse candles, and local swing points'
+          : 'Waiting for fresh Gemini chart scan',
+      tone: 'cyan',
+      state: aiResult ? 'done' : aiLoading ? 'active' : 'idle',
+    },
+    {
+      label: 'Support zone',
+      value: supportLevel
+        ? `$${supportLevel.toFixed(6)} is treated as the nearest demand / invalidation area`
+        : aiLoading
+          ? 'Mapping recent lows and failed breakdown areas'
+          : 'Support will be mapped after analysis',
+      tone: 'cyan',
+      state: supportLevel ? 'done' : aiLoading ? 'active' : 'idle',
+    },
+    {
+      label: 'Resistance zone',
+      value: resistanceLevel
+        ? `$${resistanceLevel.toFixed(6)} is the upside friction / rejection reference`
+        : aiLoading
+          ? 'Checking prior highs, rejection candles, and likely take-profit ceiling'
+          : 'Resistance will be mapped after analysis',
+      tone: 'amber',
+      state: resistanceLevel ? 'done' : aiLoading ? 'active' : 'idle',
+    },
+    {
+      label: 'Volume context',
+      value: candles.length
+        ? `${Math.round(totalVolume).toLocaleString()} total visible volume is compared with recent price movement`
+        : 'Loading market volume',
+      tone: 'cyan',
+      state: aiLoading || candles.length ? 'done' : 'idle',
+    },
+    {
+      label: 'Decision',
+      value: aiResult?.reason || decisionSummary,
+      tone: aiResult?.action === 'BUY' ? 'green' : 'cyan',
+      state: aiResult ? 'done' : aiLoading ? 'active' : 'idle',
+    },
+  ]
+
   return (
-    <div className="min-h-screen bg-bg text-slate-100 px-4 py-6 sm:px-6 lg:px-8">
-      <div className="mx-auto max-w-7xl space-y-6">
-        <header className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <p className="text-sm uppercase tracking-[0.35em] text-slate-400">MANTLE AI TRADER</p>
-            <h1 className="mt-3 text-4xl font-semibold text-white tracking-tight">Crypto Trading Dashboard</h1>
-            <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-400">
-              Live Bybit spot candles for MNT/USDT with a clean trading dashboard.
-            </p>
-          </div>
-          <div className="inline-flex items-center gap-3 rounded-full bg-slate-900/80 px-4 py-2 text-sm text-slate-200 ring-1 ring-white/10 shadow-sm">
-            <span className="inline-flex h-7 items-center rounded-full bg-violet-500/20 px-3 text-violet-200">PAPER TRADING</span>
-            <div className="ml-3 flex items-center gap-3">
-              {walletAddress ? (
-                <div className="flex items-center gap-3">
-                  <div className="text-sm text-slate-300">{shortAddress}</div>
-                  <div className="text-xs text-slate-400">{networkName || '-'}</div>
-                </div>
-              ) : (
-                <button onClick={connectWallet} className="rounded-md bg-emerald-600 px-3 py-1 text-xs font-semibold">Connect Wallet</button>
-              )}
-              {!isCorrectNetwork && (
-                <button onClick={switchToMantleSepolia} className="rounded-md bg-yellow-600 px-3 py-1 text-xs font-semibold">Switch to Mantle Sepolia</button>
-              )}
-            </div>
-          </div>
-        </header>
-
-        <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          {stats.map((card) => (
-            <div key={card.label} className="rounded-3xl border border-border/70 bg-panel/80 p-5 shadow-glow backdrop-blur">
-              <p className="text-sm text-slate-400">{card.label}</p>
-              <p className="mt-4 text-3xl font-semibold text-white">{card.value}</p>
-              <p className="mt-2 text-sm text-slate-400">{card.trend}</p>
-            </div>
-          ))}
-        </section>
-        <section className="mt-6 rounded-3xl border border-border/70 bg-panel/80 p-6 shadow-glow backdrop-blur">
-          <div className="flex items-center justify-between">
+    <div className="terminal-shell min-h-screen text-slate-100">
+      <div className="starfield" />
+      <header className="terminal-topbar relative z-10 flex flex-col gap-4 border-b border-cyan-400/20 px-4 py-4 backdrop-blur-xl lg:flex-row lg:items-center lg:justify-between lg:px-8">
+        <div className="flex items-center gap-8">
+          <div className="flex items-center gap-3">
+            <div className="brand-orb">M</div>
             <div>
-              <p className="text-sm uppercase tracking-[0.35em] text-slate-400">On-chain Signals</p>
-              <h2 className="mt-2 text-2xl font-semibold text-white">TradeSignalRegistry (Mantle Sepolia)</h2>
-            </div>
-            <div className="flex items-center gap-3">
-              <a href={`https://explorer.sepolia.mantle.xyz/address/${TRADE_SIGNAL_REGISTRY_ADDRESS}`} target="_blank" rel="noreferrer" className="text-sm text-slate-400 underline">View contract</a>
-              <button onClick={loadSignals} className="rounded-2xl bg-slate-900/90 px-4 py-2 text-sm font-semibold text-slate-100">Refresh</button>
+              <div className="text-sm font-semibold tracking-tight text-white">Mantle AI Trader</div>
+              <div className="font-mono text-[10px] uppercase tracking-[0.24em] text-slate-400">Signal Intelligence v0.5</div>
             </div>
           </div>
+          <nav className="hidden items-center gap-2 text-sm md:flex">
+            <span className="nav-pill active">Terminal</span>
+            <span className="nav-pill">Signals</span>
+            <span className="nav-pill">Vaults</span>
+            <span className="nav-pill">Docs</span>
+          </nav>
+        </div>
 
-          <div className="mt-4">
-            {txHash && (
-              <div className="mb-3 rounded-md bg-slate-900/80 p-3 text-sm">
-                Tx: <a className="underline text-emerald-300" href={`https://explorer.sepolia.mantle.xyz/tx/${txHash}`} target="_blank" rel="noreferrer">{txHash}</a>
-              </div>
-            )}
-
-            {loadingSignals ? (
-              <div className="py-6 text-center text-slate-400">Loading signals…</div>
-            ) : signals.length === 0 ? (
-              <div className="py-6 text-center text-slate-400">No on-chain signals yet</div>
-            ) : (
-              <div className="space-y-3">
-                {signals.map((s, idx) => (
-                  <div key={`${s.trader}-${idx}`} className="rounded-2xl border border-slate-800 bg-slate-950/80 p-3 text-sm text-slate-300">
-                    <div className="flex justify-between text-slate-400">
-                      <span>{shorten(s.trader)}</span>
-                      <span>{new Date(s.timestamp * 1000).toLocaleString()}</span>
-                    </div>
-                    <div className="mt-2 grid gap-2 sm:grid-cols-3">
-                      <div>Pair {s.symbol}</div>
-                      <div>Action {s.action}</div>
-                      <div>Price {(s.price / 1e8).toFixed(6)}</div>
-                    </div>
-                    <div className="mt-2 text-slate-400">Confidence: {s.confidence}%</div>
-                    <div className="mt-2 text-slate-300">{s.reason}</div>
-                  </div>
-                ))}
-              </div>
-            )}
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="status-pill hidden lg:flex">
+            <span className="pulse-dot" /> Mantle Sepolia - 5003
           </div>
-        </section>
+          {!isCorrectNetwork && (
+            <button onClick={switchToMantleSepolia} className="ghost-button px-4 py-2 text-xs font-semibold">
+              Switch Network
+            </button>
+          )}
+          <div className="credit-nav-card">
+            <div>
+              <div className="font-mono text-[10px] uppercase tracking-wider text-slate-400">AI Credits</div>
+              <div className="font-mono text-lg font-semibold text-white">
+                {creditsLoading ? '...' : credits !== null ? credits.toLocaleString() : '0'}
+              </div>
+              <div className="font-mono text-[10px] text-cyan-300">cost per analysis: {creditsRequired} credits</div>
+            </div>
+            <button
+              onClick={depositCredits}
+              disabled={depositLoading || !walletAddress || !isCorrectNetwork || !creditVaultConfigured || creditVaultPaused}
+              className="command-button px-3 py-2 text-[10px] font-bold uppercase tracking-wider disabled:opacity-50"
+            >
+              {depositLoading ? 'Depositing' : 'Deposit'}
+            </button>
+          </div>
+          {walletAddress ? (
+            <button onClick={connectWallet} className="command-button alt px-4 py-2 text-xs font-bold">
+              {shortAddress} <span className="ml-1 text-cyan-100/70">{isCorrectNetwork ? 'ready' : 'wrong net'}</span>
+            </button>
+          ) : (
+            <button onClick={connectWallet} className="command-button alt px-4 py-2 text-xs font-bold">Connect Wallet</button>
+          )}
+        </div>
+      </header>
 
-        <section className="grid gap-4 xl:grid-cols-[2fr_1fr]">
-          <div className="rounded-3xl border border-border/70 bg-panel/80 p-6 shadow-glow backdrop-blur">
-            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+      <main className="relative z-10 mx-auto max-w-[1500px] space-y-6 px-4 py-6 lg:px-8">
+        <section className="grid gap-6 xl:grid-cols-[0.95fr_1.45fr]">
+          <div className="glass-panel p-5">
+            <div className="mb-4 flex items-start justify-between gap-4">
               <div>
-                <p className="text-sm uppercase tracking-[0.35em] text-slate-400">Market view</p>
-                <h2 className="mt-2 text-2xl font-semibold text-white">{marketInfo.symbol}</h2>
-                <p className="mt-1 text-sm text-slate-400">{marketInfo.exchange} • {marketInfo.timeframe}</p>
-              </div>
-              <div className="rounded-2xl bg-slate-900/80 px-3 py-1 text-sm text-slate-300">
-                {loading ? 'Loading...' : latestPrice ? `$${latestPrice.toFixed(6)}` : 'Price unavailable'}
-              </div>
-            </div>
-            {error ? (
-              <div className="mt-8 rounded-3xl border border-red-500/30 bg-red-500/10 p-5 text-sm text-red-200">
-                Error loading candles: {error}
-              </div>
-            ) : (
-              <div className="mt-8 overflow-hidden rounded-[2rem] border border-border/60 bg-slate-950/70 p-4">
-                <div ref={chartContainerRef} className="h-[360px] w-full" />
-              </div>
-            )}
-            <div className="mt-5 flex flex-wrap gap-3 text-sm text-slate-400">
-              <span className="rounded-full border border-slate-700 px-3 py-1">1H</span>
-              <span className="rounded-full border border-slate-700 px-3 py-1">{marketInfo.exchange}</span>
-              <span className="rounded-full border border-slate-700 px-3 py-1">MNT/USDT</span>
-            </div>
-          </div>
-
-          <div className="space-y-4">
-            <div className="rounded-3xl border border-border/70 bg-panel/80 p-6 shadow-glow backdrop-blur">
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <p className="text-sm uppercase tracking-[0.35em] text-slate-400">AI Credits</p>
-                  <h2 className="mt-2 text-2xl font-semibold text-white">
-                    {creditsLoading ? 'Loading...' : credits !== null ? `${credits} credits` : 'Not connected'}
-                  </h2>
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="asset-dot">{selectedMarket.label.slice(0, 1)}</div>
+                  <h1 className="text-2xl font-semibold text-white">{marketInfo.symbol}</h1>
+                  <span className="mini-badge">{marketInfo.exchange}</span>
+                  <span className="mini-badge">{marketInfo.timeframe}</span>
                 </div>
-                <span className="rounded-full bg-emerald-500/10 px-3 py-1 text-xs font-semibold text-emerald-200">
-                  Mantle Sepolia
-                </span>
-              </div>
-              <div className="mt-4 space-y-2 text-sm text-slate-300">
-                <div className="flex items-center justify-between">
-                  <span>Required per analysis</span>
-                  <span>{creditsRequired} credit</span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span>Credit rate</span>
-                  <span>{creditRate ? `${creditRate} / MNT` : '-'}</span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span>Vault</span>
-                  <span className="max-w-[10rem] truncate text-right text-slate-400">
-                    {creditVaultConfigured ? ANALYSIS_CREDIT_VAULT_ADDRESS : 'Not deployed'}
+                <div className="mt-3 flex items-baseline gap-3">
+                  <span className="font-mono text-3xl font-semibold text-white">
+                    {latestPrice ? `$${latestPrice.toFixed(6)}` : 'Loading'}
+                  </span>
+                  <span className={marketChange >= 0 ? 'text-emerald-300' : 'text-red-300'}>
+                    {marketChange >= 0 ? '+' : ''}{marketChange.toFixed(2)}%
                   </span>
                 </div>
               </div>
-              {!creditVaultConfigured && (
-                <div className="mt-4 rounded-2xl border border-yellow-400/20 bg-yellow-400/10 p-3 text-sm text-yellow-200">
-                  Demo vault address is not configured yet. Set VITE_ANALYSIS_CREDIT_VAULT_ADDRESS after deploying to Mantle Sepolia.
-                </div>
-              )}
-              {walletAddress && credits === 0 && (
-                <div className="mt-4 rounded-2xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200">
-                  You have 0 AI credits. Future production analysis requests will require credits before Gemini runs.
-                </div>
-              )}
-              {creditVaultPaused && (
-                <div className="mt-4 rounded-2xl border border-yellow-400/20 bg-yellow-400/10 p-3 text-sm text-yellow-200">
-                  Credit deposits are paused by the vault owner.
-                </div>
-              )}
-              {creditsError && (
-                <div className="mt-4 rounded-2xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200">
-                  {creditsError}
-                </div>
-              )}
-              <div className="mt-5 grid gap-3">
-                <button
-                  onClick={depositCredits}
-                  disabled={depositLoading || !walletAddress || !isCorrectNetwork || !creditVaultConfigured || creditVaultPaused}
-                  className="rounded-2xl bg-emerald-600 px-4 py-3 text-sm font-semibold text-white transition disabled:opacity-60"
-                >
-                  {depositLoading ? 'Depositing...' : 'Deposit test MNT for credits'}
-                </button>
-                <button
-                  onClick={loadCreditBalance}
-                  disabled={!walletAddress || !creditVaultConfigured || creditsLoading}
-                  className="rounded-2xl bg-slate-800 px-4 py-3 text-sm font-semibold text-slate-100 transition disabled:opacity-60"
-                >
-                  Refresh credits
-                </button>
+              <div className="flex max-w-[13rem] flex-wrap justify-end gap-2">
+                <span className="mini-badge live">Live market data</span>
+                <span className="mini-badge violet">Paper trading</span>
+                <span className="mini-badge amber">Mantle Sepolia</span>
               </div>
             </div>
 
-            <div className="rounded-3xl border border-border/70 bg-panel/80 p-6 shadow-glow backdrop-blur">
-              <p className="text-sm uppercase tracking-[0.35em] text-slate-400">Market analysis</p>
-              <h2 className="mt-3 text-2xl font-semibold text-white">Price momentum overview</h2>
-              <p className="mt-4 text-sm leading-6 text-slate-300">
-                Live {marketInfo.exchange} candlestick data for the selected spot pair in an easy-to-read trading interface.
-              </p>
-              <div className="mt-4 rounded-2xl border border-slate-700 bg-slate-950/60 p-3 text-sm text-slate-300">
-                Analyze Now requires {creditsRequired} demo AI credit and a wallet signature. Credits are consumed on Mantle Sepolia after Gemini returns an analysis.
+            {error ? (
+              <div className="alert-card p-5 text-sm text-red-200">Error loading candles: {error}</div>
+            ) : (
+              <div className="chart-frame grid-bg relative overflow-hidden p-4">
+                <div ref={chartContainerRef} className="h-[520px] w-full" />
+                {supportLevel && <div className="chart-tag support">S - ${supportLevel.toFixed(4)}</div>}
+                {resistanceLevel && <div className="chart-tag resistance">R - ${resistanceLevel.toFixed(4)}</div>}
               </div>
-              {walletAddress && credits === 0 && (
-                <div className="mt-3 rounded-2xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200">
-                  Credit balance is 0. Deposit test MNT for credits before the future gated Gemini flow is enabled.
-                </div>
-              )}
-              <div className="mt-6 space-y-3 rounded-3xl bg-slate-900/80 p-4 text-sm text-slate-300">
-                {aiLoading ? (
-                  <div className="py-4 text-center">Analysis running...</div>
-                ) : aiError ? (
-                  <div className="py-4 text-center text-red-300">Analysis error: {aiError}</div>
-                ) : aiResult ? (
-                  <div className="space-y-3">
-                    { (aiResult as any).stale && (
-                      <div className="mb-2 inline-block rounded-full bg-yellow-400/10 px-3 py-1 text-xs font-semibold text-yellow-300">Cached analysis</div>
-                    ) }
-                    <div className="flex items-center justify-between">
-                      <span className="font-medium">Signal</span>
-                      <span className={aiResult.action === 'BUY' ? 'text-emerald-400' : 'text-slate-300'}>{aiResult.action}</span>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span>Confidence</span>
-                      <span>{Math.round(aiResult.confidence * 100)}%</span>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span>Support</span>
-                      <span>${aiResult.support_price.toFixed(6)}</span>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span>Resistance</span>
-                      <span>${aiResult.resistance_price.toFixed(6)}</span>
-                    </div>
-                    <div>
-                      <p className="text-sm text-slate-300">{aiResult.reason}</p>
-                      {aiResult.credits_consumed && (
-                        <p className="mt-2 text-xs text-emerald-300">
-                          Consumed {aiResult.credits_consumed} AI credit{aiResult.credits_consumed === 1 ? '' : 's'}.
-                        </p>
-                      )}
-                      {aiResult.credit_consume_tx_hash && (
-                        <p className="mt-2 truncate text-xs text-slate-400">
-                          Credit tx: {aiResult.credit_consume_tx_hash}
-                        </p>
-                      )}
-                      { (aiResult as any).stale && (
-                        <p className="mt-2 text-xs text-yellow-300">Gemini temporarily unavailable. Displaying the latest verified analysis.</p>
-                      ) }
-                      {aiTime && <p className="mt-2 text-xs text-slate-400">Updated: {aiTime}</p>}
-                    </div>
-                  </div>
-                ) : (
-                  <div className="py-4 text-center text-slate-300">Press "Analyze Now" to run Gemini analysis.</div>
-                )}
-              </div>
-              <div className="mt-4 flex items-center justify-end">
-                {aiResult && (
-                  <button
-                    onClick={recordAiSignalOnChain}
-                    disabled={!walletAddress || !isCorrectNetwork}
-                    className="mr-3 rounded-2xl bg-emerald-600 px-4 py-3 text-sm font-semibold text-white transition disabled:opacity-60"
-                  >
-                    Record AI Signal On-chain
-                  </button>
-                )}
-                <button
-                  onClick={analyzeNow}
-                  disabled={aiLoading || !walletAddress || !isCorrectNetwork || (credits ?? 0) < creditsRequired}
-                  className="rounded-2xl bg-slate-800 px-4 py-3 text-sm font-semibold text-slate-100 transition disabled:opacity-60"
-                >
-                  {aiLoading ? 'Analyzing…' : 'Analyze Now'}
-                </button>
-              </div>
-            </div>
+            )}
 
-            <div className="rounded-3xl border border-border/70 bg-panel/80 p-6 shadow-glow backdrop-blur">
-              <div className="flex items-center justify-between">
+            <div className="mt-4 grid grid-cols-2 gap-3 text-xs sm:grid-cols-4">
+              <div className="stat-tile"><span>24h high</span><strong>{latestHigh ? `$${latestHigh.toFixed(4)}` : '-'}</strong></div>
+              <div className="stat-tile"><span>24h low</span><strong>{latestLow ? `$${latestLow.toFixed(4)}` : '-'}</strong></div>
+              <div className="stat-tile"><span>Volume</span><strong>{Math.round(totalVolume).toLocaleString()}</strong></div>
+              <div className="stat-tile"><span>Source</span><strong>{marketInfo.exchange || '-'}</strong></div>
+            </div>
+          </div>
+
+          <div className={`glass-panel relative overflow-hidden p-5 reasoning-panel ${reasoningPhase}`}>
+            <div className="mb-4 flex items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="brain-chip">AI</div>
                 <div>
-                  <p className="text-sm uppercase tracking-[0.35em] text-slate-400">Agent controls</p>
-                  <h2 className="mt-2 text-2xl font-semibold text-white">Live trading agent</h2>
+                  <h2 className="text-lg font-semibold text-white">AI Reasoning Engine</h2>
+                  <div className="font-mono text-[10px] uppercase tracking-[0.22em] text-slate-400">Gemini - Chart Vision - Credit gated</div>
                 </div>
-                <span className={`rounded-full px-3 py-1 text-xs font-semibold ${account?.agent_running ? 'bg-emerald-500/20 text-emerald-200' : 'bg-slate-700/80 text-slate-300'}`}>
-                  {account?.agent_running ? 'Running' : 'Stopped'}
-                </span>
               </div>
-              <div className="mt-6 grid gap-3">
-                <button
-                  onClick={() => handleAgentAction('start')}
-                  disabled={controlLoading || account?.agent_running}
-                  className="rounded-2xl bg-accent px-4 py-3 text-sm font-semibold text-white transition disabled:opacity-60"
-                >
-                  Start Agent
-                </button>
-                <button
-                  onClick={() => handleAgentAction('stop')}
-                  disabled={controlLoading || !account?.agent_running}
-                  className="rounded-2xl bg-slate-800 px-4 py-3 text-sm font-semibold text-slate-100 transition disabled:opacity-60"
-                >
-                  Stop Agent
-                </button>
-                <button
-                  onClick={handleReset}
-                  disabled={controlLoading}
-                  className="rounded-2xl border border-slate-700 bg-slate-900/90 px-4 py-3 text-sm font-semibold text-slate-100 transition disabled:opacity-60"
-                >
-                  Reset Account
-                </button>
+              <div className="font-mono text-[10px] uppercase tracking-wider text-emerald-300">
+                <span className="pulse-dot" /> {aiLoading ? 'Thinking' : aiResult ? 'Decision synced' : aiError ? 'Needs retry' : 'Standby'}
               </div>
-              {statusError && (
-                <div className="mt-4 rounded-3xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200">
-                  {statusError}
+            </div>
+
+            <div className={`ai-core grid-bg ${aiLoading ? 'is-thinking' : ''}`}>
+              {aiLoading && <div className="scan-beam" />}
+              {aiLoading && <div className="core-particles"><i /><i /><i /><i /><i /></div>}
+              <div className="ai-orbit"><span /></div>
+              <div className="ai-core-label">{aiLoading ? 'Reasoning loop active' : 'Neural core online'}</div>
+              <div className="ai-core-sync">{aiLoading ? 'Gemini reading candles' : '5/5 modules synced'}</div>
+            </div>
+
+            <div className="mt-5 space-y-3">
+              {reasoningSteps.map((step, index) => (
+                <div key={step.label} className={`reason-row ${step.state}`}>
+                  <div className={`reason-dot ${step.tone}`} />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center justify-between gap-4">
+                      <span className="text-xs font-semibold uppercase tracking-wide text-slate-100">{step.label}</span>
+                      <span className="font-mono text-[9px] text-slate-500">{step.state === 'done' ? 'mapped' : step.state === 'active' ? 'scanning' : `step ${index + 1}/5`}</span>
+                    </div>
+                    <p className="mt-1 line-clamp-2 font-mono text-xs leading-relaxed text-slate-400">{step.value}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="signal-output mt-5 p-4">
+              <div className="flex items-center justify-between gap-4">
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-slate-400">Signal</span>
+                  <span className={`signal-pill ${aiResult?.action === 'BUY' ? 'buy' : 'hold'}`}>{aiResult?.action || 'WAIT'}</span>
+                  {aiResult?.stale && <span className="signal-pill stale">Cached</span>}
+                </div>
+                <div className="font-mono text-[10px] text-slate-400">Confidence <span className="text-white">{aiResult ? `${confidencePercent}%` : '-'}</span></div>
+              </div>
+              <div className="mt-3 h-1 rounded-full bg-white/5">
+                <div className="h-full rounded-full bg-gradient-to-r from-emerald-400 to-cyan-300" style={{ width: `${Math.min(confidencePercent || 8, 100)}%` }} />
+              </div>
+              <div className="mt-4 grid grid-cols-2 gap-3 font-mono text-xs">
+                <div><div className="text-[10px] uppercase text-slate-500">Support</div><div className="text-emerald-300">{supportLevel ? `$${supportLevel.toFixed(6)}` : '-'}</div></div>
+                <div><div className="text-[10px] uppercase text-slate-500">Resistance</div><div className="text-red-300">{resistanceLevel ? `$${resistanceLevel.toFixed(6)}` : '-'}</div></div>
+              </div>
+              <div className="mt-4 rounded-lg border border-cyan-300/10 bg-slate-950/35 p-3">
+                <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.2em] text-cyan-200">Decision trace</div>
+                <p className="text-sm leading-6 text-slate-300">
+                  {aiError
+                    ? `Analysis error: ${aiError}`
+                    : aiLoading
+                      ? 'Gemini is comparing trend, support, resistance, and volume. The credit will be consumed only if a valid analysis comes back.'
+                      : aiResult?.reason || 'Press Analyze Now to send the current chart to Gemini and receive an explainable trading signal.'}
+                </p>
+                {aiResult?.credits_consumed ? (
+                  <p className="mt-2 font-mono text-[10px] text-emerald-300">Consumed {aiResult.credits_consumed} AI credit on Mantle Sepolia.</p>
+                ) : null}
+                {aiResult?.credit_consume_tx_hash ? (
+                  <a href={`https://sepolia.mantlescan.xyz/tx/${aiResult.credit_consume_tx_hash}`} target="_blank" rel="noreferrer" className="mt-1 block truncate font-mono text-[10px] text-cyan-300 underline">
+                    Credit tx: {aiResult.credit_consume_tx_hash}
+                  </a>
+                ) : null}
+              </div>
+              {aiTime && <p className="mt-2 font-mono text-[10px] text-slate-500">Updated: {aiTime}</p>}
+              {walletAddress && (credits ?? 0) < creditsRequired && (
+                <div className="mt-3 rounded-lg border border-red-400/30 bg-red-500/10 p-3 text-xs text-red-200">
+                  Need {creditsRequired} credits for a fresh Gemini analysis. Deposit test MNT first.
                 </div>
               )}
-            </div>
-
-            <div className="rounded-3xl border border-border/70 bg-panel/80 p-6 shadow-glow backdrop-blur">
-              <p className="text-sm uppercase tracking-[0.35em] text-slate-400">Account snapshot</p>
-              <div className="mt-4 space-y-3 text-sm text-slate-300">
-                <div className="flex items-center justify-between">
-                  <span>Available USDT</span>
-                  <span>{account ? formatCurrency(account.usdt_balance) : '-'}</span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span>MNT held</span>
-                  <span>{account ? account.mnt_held.toFixed(4) : '-'}</span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span>Equity</span>
-                  <span>{account ? formatCurrency(account.equity) : '-'}</span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span>Cooldown</span>
-                  <span>{account ? `${account.cooldown_remaining} candles` : '-'}</span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span>Last hold reason</span>
-                  <span className="max-w-[12rem] truncate text-right text-slate-400">{account?.last_hold_reason || '-'}</span>
-                </div>
+              <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                <button onClick={analyzeNow} disabled={!canAnalyze} className="command-button alt px-4 py-3 text-xs font-bold disabled:opacity-50">
+                  {aiLoading ? 'Analyzing...' : `Analyze Now (${creditsRequired} credits)`}
+                </button>
+                <button onClick={recordAiSignalOnChain} disabled={!aiResult || aiResult.stale || !walletAddress || !isCorrectNetwork} className="ghost-button px-4 py-3 text-xs font-semibold disabled:opacity-50">
+                  Record Signal On-chain
+                </button>
               </div>
             </div>
           </div>
         </section>
 
-        <section className="grid gap-4 xl:grid-cols-[2fr_1fr]">
-          <div className="rounded-3xl border border-border/70 bg-panel/80 p-6 shadow-glow backdrop-blur">
-            <div className="flex items-center justify-between gap-4">
-              <div>
-                <p className="text-sm uppercase tracking-[0.35em] text-slate-400">Trade history</p>
-                <h2 className="mt-2 text-2xl font-semibold text-white">Open position & closed trades</h2>
-              </div>
-              <button
-                onClick={fetchTrades}
-                className="rounded-2xl bg-slate-900/90 px-4 py-2 text-sm font-semibold text-slate-100 transition hover:bg-slate-800"
-              >
-                Refresh
-              </button>
-            </div>
-
-            <div className="mt-6 space-y-6">
-              <div className="rounded-3xl border border-border/70 bg-slate-950/80 p-4">
-                <p className="text-sm uppercase tracking-[0.35em] text-slate-400">Open trade</p>
-                {trades?.open_trade ? (
-                  <div className="mt-4 space-y-3 text-sm text-slate-300">
-                    <div className="flex justify-between">
-                      <span>Entry price</span>
-                      <span>${trades.open_trade.entry_price.toFixed(6)}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span>Quantity</span>
-                      <span>{trades.open_trade.quantity.toFixed(4)} MNT</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span>Take profit</span>
-                      <span>${trades.open_trade.take_profit_price.toFixed(6)}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span>Stop loss</span>
-                      <span>${trades.open_trade.stop_loss_price.toFixed(6)}</span>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="mt-4 rounded-2xl bg-slate-900/80 p-4 text-sm text-slate-400">No open trade</div>
-                )}
-              </div>
-
-              <div className="rounded-3xl border border-border/70 bg-slate-950/80 p-4">
-                <p className="text-sm uppercase tracking-[0.35em] text-slate-400">Recent closes</p>
-                {trades?.trades_history?.length ? (
-                  <div className="mt-4 space-y-3 text-sm text-slate-300">
-                    {trades.trades_history.slice(-4).reverse().map((trade) => (
-                      <div key={trade.id} className="rounded-2xl border border-slate-800 bg-slate-900/70 p-3">
-                        <div className="flex justify-between text-slate-400">
-                          <span>#{trade.id}</span>
-                          <span>{trade.status}</span>
-                        </div>
-                        <div className="mt-2 grid gap-2 text-sm text-slate-300 sm:grid-cols-2">
-                          <div>Entry {trade.entry_price.toFixed(6)}</div>
-                          <div>Close {trade.close_price?.toFixed(6) ?? '—'}</div>
-                          <div>PnL {trade.pnl_usdt?.toFixed(2) ?? '—'}</div>
-                          <div>{trade.close_reason ?? '—'}</div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="mt-4 rounded-2xl bg-slate-900/80 p-4 text-sm text-slate-400">No closed trades yet</div>
-                )}
-              </div>
+        <section className="glass-panel p-5">
+          <div className="mb-4 flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-white">Paper Trading Account</h3>
+            <span className="mini-badge violet">Simulated</span>
+          </div>
+          <div className="grid gap-3 md:grid-cols-5">
+            <div className="stat-tile"><span>Balance</span><strong>{account ? formatCurrency(account.usdt_balance) : '-'}</strong><small>USDT</small></div>
+            <div className="stat-tile"><span>Equity</span><strong>{account ? formatCurrency(account.equity) : '-'}</strong><small>{latestPrice ? `$${latestPrice.toFixed(4)} spot` : '-'}</small></div>
+            <div className="stat-tile"><span>Position</span><strong>{openTrade ? 'LONG MNT' : 'No position'}</strong><small>{openTrade ? `Entry $${openTrade.entry_price.toFixed(4)}` : 'idle'}</small></div>
+            <div className="stat-tile"><span>Unrealized PnL</span><strong>{openTrade?.pnl_usdt ? formatCurrency(openTrade.pnl_usdt) : '$0.00'}</strong><small>{openTrade?.pnl_percent ? `${openTrade.pnl_percent.toFixed(2)}%` : '-'}</small></div>
+            <div className="stat-tile"><span>MNT held</span><strong>{account ? account.mnt_held.toFixed(4) : '-'}</strong><small>{account && latestPrice ? formatCurrency(account.mnt_held * latestPrice) : '-'}</small></div>
+          </div>
+          <div className="risk-panel mt-4">
+            <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-300">Risk Rules</div>
+            <div className="grid gap-2 font-mono text-[10px] text-slate-400 md:grid-cols-6">
+              <span>Mode: <b>Paper trading</b></span>
+              <span>Timeframe: <b>1H</b></span>
+              <span>Take profit: <b>+3%</b></span>
+              <span>Stop: <b>below AI support</b></span>
+              <span>Max positions: <b>1</b></span>
+              <span>Cooldown: <b>{account?.cooldown_remaining ?? 0} candles</b></span>
             </div>
           </div>
+        </section>
 
-          <div className="rounded-3xl border border-border/70 bg-panel/80 p-6 shadow-glow backdrop-blur">
-            <p className="text-sm uppercase tracking-[0.35em] text-slate-400">Analysis & logs</p>
-            <div className="mt-4 space-y-3 rounded-3xl bg-slate-950/80 p-4 text-sm text-slate-300">
-              <div className="flex justify-between border-b border-slate-800 pb-3">
-                <span>Last analysis</span>
-                <span className="text-slate-400">{aiTime || '-'}</span>
-              </div>
+        <section className="grid gap-6 lg:grid-cols-2">
+          <div className="glass-panel p-5">
+            <div className="mb-4 flex items-center justify-between gap-4">
               <div>
-                <p className="text-slate-400">Signal:</p>
-                <p className="text-white">{aiResult ? aiResult.action : '-'}</p>
+                <div className="font-mono text-[10px] uppercase tracking-[0.28em] text-slate-400">On-chain signal history</div>
+                <h3 className="mt-2 text-lg font-semibold text-white">TradeSignalRegistry</h3>
               </div>
-              <div>
-                <p className="text-slate-400">Reason:</p>
-                <p className="text-slate-300">{aiResult?.reason || account?.last_hold_reason || '-'}</p>
+              <a href={verifiedContractUrl} target="_blank" rel="noreferrer" className="verified-badge">Verified contract</a>
+            </div>
+            {txHash && <div className="mb-3 truncate rounded-lg bg-slate-950/70 p-3 text-xs text-cyan-200">Tx: <a href={`https://sepolia.mantlescan.xyz/tx/${txHash}`} target="_blank" rel="noreferrer" className="underline">{txHash}</a></div>}
+            {loadingSignals ? (
+              <div className="empty-state p-4 text-center text-sm text-slate-400">Loading signals...</div>
+            ) : signals.length === 0 ? (
+              <div className="empty-state p-4 text-center text-sm text-slate-400">No on-chain signals yet</div>
+            ) : (
+              <div className="space-y-2">
+                {displayedSignals.map((s, idx) => (
+                  <div key={`${s.trader}-${idx}`} className="history-row">
+                    <span className={`signal-pill ${s.action === 'BUY' ? 'buy' : 'hold'}`}>{s.action}</span>
+                    <span>{s.symbol}</span>
+                    <span>conf {s.confidence}%</span>
+                    <span>${(s.price / 1e8).toFixed(6)}</span>
+                    <span className="truncate text-right text-slate-500">{shorten(s.trader)}</span>
+                  </div>
+                ))}
+                {signals.length > 4 && <button onClick={() => setShowAllSignals((value) => !value)} className="ghost-button mt-2 px-3 py-2 text-xs">{showAllSignals ? 'Show less' : `Show ${signals.length - 4} more`}</button>}
+              </div>
+            )}
+          </div>
+
+          <div className="glass-panel p-5">
+            <div className="mb-4 flex items-center justify-between">
+              <h3 className="text-lg font-semibold text-white">Trade History</h3>
+              <button onClick={fetchTrades} className="ghost-button px-3 py-2 text-xs">Refresh</button>
+            </div>
+            <div className="space-y-4">
+              <div className="sub-panel p-4">
+                <div className="mb-3 font-mono text-[10px] uppercase tracking-wider text-slate-400">Open trade</div>
+                {openTrade ? (
+                  <div className="grid gap-2 text-sm text-slate-300 sm:grid-cols-2">
+                    <span>Entry ${openTrade.entry_price.toFixed(6)}</span>
+                    <span>Qty {openTrade.quantity.toFixed(4)} MNT</span>
+                    <span>Take profit ${openTrade.take_profit_price.toFixed(6)}</span>
+                    <span>Stop loss ${openTrade.stop_loss_price.toFixed(6)}</span>
+                  </div>
+                ) : <div className="empty-state p-3 text-sm text-slate-400">No open trade</div>}
+              </div>
+              <div className="sub-panel p-4">
+                <div className="mb-3 font-mono text-[10px] uppercase tracking-wider text-slate-400">Recent closes</div>
+                {trades?.trades_history?.length ? trades.trades_history.slice(-5).reverse().map((trade) => (
+                  <div key={trade.id} className="history-row">
+                    <span>#{trade.id}</span><span>{trade.status}</span><span>{trade.entry_price.toFixed(4)}</span><span>{trade.close_price?.toFixed(4) ?? '-'}</span><span>{trade.pnl_usdt?.toFixed(2) ?? '-'}</span>
+                  </div>
+                )) : <div className="empty-state p-3 text-sm text-slate-400">No closed trades yet</div>}
               </div>
             </div>
           </div>
         </section>
-      </div>
+
+        <section className="grid gap-6 lg:grid-cols-[1fr_0.8fr]">
+          <div className="glass-panel p-5">
+            <div className="mb-4 flex items-center justify-between">
+              <h3 className="text-lg font-semibold text-white">Agent Controls</h3>
+              <span className={account?.agent_running ? 'signal-pill buy' : 'signal-pill hold'}>{account?.agent_running ? 'Running' : 'Stopped'}</span>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-3">
+              <button onClick={() => handleAgentAction('start')} disabled={controlLoading || account?.agent_running} className="command-button alt px-4 py-3 text-sm font-bold disabled:opacity-50">Start Agent</button>
+              <button onClick={() => handleAgentAction('stop')} disabled={controlLoading || !account?.agent_running} className="ghost-button px-4 py-3 text-sm font-semibold disabled:opacity-50">Stop Agent</button>
+              <button onClick={handleReset} disabled={controlLoading} className="ghost-button px-4 py-3 text-sm font-semibold disabled:opacity-50">Reset Account</button>
+            </div>
+            {statusError && <div className="alert-card mt-4 p-3 text-sm text-red-200">{statusError}</div>}
+          </div>
+          <div className="glass-panel p-5">
+            <div className="font-mono text-[10px] uppercase tracking-[0.28em] text-slate-400">Analysis logs</div>
+            <div className="result-card mt-4 space-y-3 p-4 text-sm text-slate-300">
+              <div className="flex justify-between border-b border-slate-800 pb-3"><span>Last analysis</span><span>{aiTime || '-'}</span></div>
+              <div><p className="text-slate-500">Signal</p><p className="text-white">{aiResult?.action || '-'}</p></div>
+              <div><p className="text-slate-500">Reason</p><p>{aiResult?.reason || account?.last_hold_reason || '-'}</p></div>
+            </div>
+          </div>
+        </section>
+      </main>
     </div>
   )
 }
 
 export default App
+

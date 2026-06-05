@@ -6,7 +6,7 @@ from typing import Literal, Optional
 from enum import Enum
 
 import ccxt
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
@@ -109,9 +109,11 @@ class AIResponseModel(BaseModel):
 
 
 class AnalyzeRequest(BaseModel):
+    symbol: str
     wallet_address: str
     signature: str
     nonce: str
+    message: Optional[str] = None
 
 
 # ===== Global State =====
@@ -119,6 +121,14 @@ class AnalyzeRequest(BaseModel):
 account = PaperAccount()
 agent_task: Optional[asyncio.Task] = None
 used_billing_nonces: set[str] = set()
+SUPPORTED_SYMBOLS = {
+    "MNT/USDT",
+    "BTC/USDT",
+    "ETH/USDT",
+    "SOL/USDT",
+    "ARB/USDT",
+    "OP/USDT",
+}
 
 ANALYSIS_CREDIT_VAULT_ABI = [
     {
@@ -195,11 +205,19 @@ def get_credit_vault_address() -> str:
     )
 
 
-def build_analysis_auth_message(wallet_address: str, amount: int, nonce: str) -> str:
+def normalize_symbol(symbol: str) -> str:
+    normalized = symbol.strip().upper()
+    if normalized not in SUPPORTED_SYMBOLS:
+        raise HTTPException(status_code=400, detail=f"Unsupported symbol: {symbol}")
+    return normalized
+
+
+def build_analysis_auth_message(wallet_address: str, amount: int, nonce: str, symbol: str) -> str:
     return (
         "Mantle AI Trader\n"
         "Authorize AI analysis credit spend\n"
         f"Wallet: {wallet_address}\n"
+        f"Symbol: {symbol}\n"
         f"Credits: {amount}\n"
         f"Vault: {get_credit_vault_address()}\n"
         "Network: Mantle Sepolia\n"
@@ -226,7 +244,7 @@ def get_billing_contract():
     )
 
 
-def verify_analysis_signature(wallet_address: str, signature: str, nonce: str, amount: int) -> str:
+def verify_analysis_signature(wallet_address: str, signature: str, nonce: str, amount: int, symbol: str, signed_message: Optional[str] = None) -> str:
     if Account is None or encode_defunct is None or Web3 is None:
         raise HTTPException(status_code=500, detail="eth-account SDK not available")
 
@@ -235,7 +253,39 @@ def verify_analysis_signature(wallet_address: str, signature: str, nonce: str, a
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid wallet address")
 
-    message = build_analysis_auth_message(checksum_wallet, amount, nonce)
+    message = signed_message or build_analysis_auth_message(checksum_wallet, amount, nonce, symbol)
+    expected_fields = {
+        "Wallet": checksum_wallet,
+        "Symbol": symbol,
+        "Credits": str(amount),
+        "Vault": get_credit_vault_address(),
+        "Network": "Mantle Sepolia",
+        "Nonce": nonce,
+    }
+    parsed_fields = {}
+    for line in message.splitlines():
+        if ": " not in line:
+            continue
+        key, value = line.split(": ", 1)
+        parsed_fields[key] = value
+
+    try:
+        if Web3.to_checksum_address(parsed_fields.get("Wallet", "")) != checksum_wallet:
+            raise ValueError("wallet mismatch")
+    except Exception:
+        raise HTTPException(status_code=401, detail="Signed wallet does not match requester")
+
+    if parsed_fields.get("Symbol") != expected_fields["Symbol"]:
+        raise HTTPException(status_code=401, detail="Signed symbol does not match request")
+    if parsed_fields.get("Credits") != expected_fields["Credits"]:
+        raise HTTPException(status_code=401, detail="Signed credit amount does not match request")
+    if parsed_fields.get("Nonce") != expected_fields["Nonce"]:
+        raise HTTPException(status_code=401, detail="Signed nonce does not match request")
+    if parsed_fields.get("Network") != expected_fields["Network"]:
+        raise HTTPException(status_code=401, detail="Signed network does not match request")
+    if parsed_fields.get("Vault", "").lower() != expected_fields["Vault"].lower():
+        raise HTTPException(status_code=401, detail="Signed vault does not match billing contract")
+
     try:
         recovered = Account.recover_message(encode_defunct(text=message), signature=signature)
     except Exception as exc:
@@ -627,8 +677,8 @@ async def health():
 
 
 @app.get("/api/market/candles")
-async def get_market_candles():
-    symbol = os.getenv("TRADING_SYMBOL", os.getenv("SYMBOL", "MNT/USDT"))
+async def get_market_candles(symbol: str = Query(default="MNT/USDT")):
+    symbol = normalize_symbol(symbol)
     ohlcv, source = await fetch_candles(symbol, "1h", 102)
     
     closed_candles = ohlcv
@@ -681,7 +731,7 @@ async def billing_status():
 
 @app.post("/api/ai/analyze")
 async def ai_analyze(request: AnalyzeRequest):
-    symbol = os.getenv("TRADING_SYMBOL", os.getenv("SYMBOL", "MNT/USDT"))
+    symbol = normalize_symbol(request.symbol)
     credit_amount = get_credit_required()
     if request.nonce in used_billing_nonces:
         raise HTTPException(status_code=409, detail="Billing nonce already used")
@@ -691,6 +741,8 @@ async def ai_analyze(request: AnalyzeRequest):
         request.signature,
         request.nonce,
         credit_amount,
+        symbol,
+        request.message,
     )
     await run_in_threadpool(assert_billing_can_consume)
     balance = await run_in_threadpool(get_credit_balance, wallet_address)

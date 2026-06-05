@@ -1,11 +1,12 @@
 # Mantle AI Trader
 
-A clean starter project for a crypto trading dashboard UI with a Python FastAPI backend.
+Mantle AI Trader is a credit-gated AI signal terminal for crypto markets. Users select a trading pair, spend Mantle Sepolia demo credits for a Gemini-powered market read, and can record selected AI signals on-chain as public trading receipts.
 
 ## Structure
 
 - `frontend/`: React + TypeScript + Vite + Tailwind CSS
 - `backend/`: Python + FastAPI
+- `contracts/`: Mantle Sepolia demo smart contracts
 
 ## Local setup
 
@@ -114,4 +115,57 @@ Backend deployment requirements:
 ## API
 
 - `GET /health` returns `{ "ok": true }`
-- `GET /api/billing/status` returns demo billing metadata for the future credit-gated AI analysis flow.
+- `GET /api/billing/status` returns billing metadata for the credit-gated AI analysis flow.
+
+## Supported Markets
+
+The app currently supports credit-gated AI analysis for:
+
+- `MNT/USDT`
+- `BTC/USDT`
+- `ETH/USDT`
+- `SOL/USDT`
+- `ARB/USDT`
+- `OP/USDT`
+
+Each `Analyze Now` request costs `1` demo AI credit across all supported pairs. The signed wallet message includes the selected symbol, so the backend verifies both user identity and the market being analyzed before spending a credit.
+
+## Roadmap
+
+### Phase 1: MVP terminal
+
+- Live spot candles
+- Gemini BUY/HOLD analysis
+- Paper trading agent
+- On-chain signal recording
+- Mantle Sepolia AI credits
+- Credit-gated analysis requests
+- Multi-pair market selector
+
+### Phase 2: Verifiable performance
+
+- Track signal outcome after fixed windows
+- Calculate PnL per recorded signal
+- Add wallet-level win rate and average return
+- Show verified signal history per user
+- Add leaderboard for best signal records
+
+### Phase 3: Productized credit tiers
+
+- 1 credit: single-pair quick read
+- 3 credits: multi-timeframe analysis
+- 5 credits: portfolio scan
+- Optional agent mode with recurring credit budget
+
+### Phase 4: Agent marketplace
+
+- User-created AI strategies
+- Public strategy pages
+- Strategy subscriptions paid in credits
+- On-chain reputation for agents and signal authors
+
+## Hackathon Description
+
+Mantle AI Trader turns AI market analysis into a credit-gated on-chain product. Instead of offering unlimited free Gemini calls, users deposit Mantle Sepolia test MNT into `AnalysisCreditVault` to receive AI credits. They choose a market pair, sign a wallet authorization, spend credits for an AI analysis, and can publish the resulting signal to `TradeSignalRegistry` on Mantle Sepolia.
+
+The project demonstrates a practical web3 business model for AI apps: wallet identity, prepaid credits, backend API protection, and public on-chain receipts for generated signals. The current demo uses testnet funds only and is designed as a foundation for verifiable signal performance, trader reputation, and future AI strategy marketplaces.
