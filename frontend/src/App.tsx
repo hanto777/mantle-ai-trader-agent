@@ -401,8 +401,7 @@ function App() {
     setCreditsLoading(true)
     setCreditsError(null)
     try {
-      const eth = (window as any).ethereum
-      const provider = eth ? new ethers.BrowserProvider(eth) : new ethers.JsonRpcProvider(MANTLE_SEPOLIA_RPC)
+      const provider = new ethers.JsonRpcProvider(MANTLE_SEPOLIA_RPC)
       const contract = new ethers.Contract(ANALYSIS_CREDIT_VAULT_ADDRESS, AnalysisCreditVaultABI as any, provider) as any
       const [balanceBn, rateBn, paused] = await Promise.all([
         contract.creditsOf(walletAddress),
