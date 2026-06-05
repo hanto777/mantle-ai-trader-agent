@@ -98,6 +98,7 @@ button {
   .info-card,
   .empty-state,
   .mini-row,
+  .market-button,
   .chart-frame {
     border: 1px solid rgba(71, 85, 105, 0.55);
     border-radius: 8px;
@@ -113,6 +114,26 @@ button {
     transform: translateY(-2px);
     border-color: rgba(38, 244, 199, 0.45);
     background: rgba(5, 19, 38, 0.82);
+  }
+
+  .market-button {
+    min-height: 74px;
+    background:
+      linear-gradient(145deg, rgba(15, 23, 42, 0.9), rgba(2, 8, 23, 0.72));
+    transition: transform 150ms ease, border-color 150ms ease, background 150ms ease;
+  }
+
+  .market-button:hover {
+    transform: translateY(-1px);
+    border-color: rgba(142, 231, 255, 0.45);
+  }
+
+  .market-button.active {
+    border-color: rgba(38, 244, 199, 0.75);
+    background:
+      linear-gradient(145deg, rgba(20, 184, 166, 0.22), rgba(124, 92, 255, 0.18)),
+      rgba(2, 8, 23, 0.86);
+    box-shadow: 0 10px 34px rgba(38, 244, 199, 0.12);
   }
 
   .chart-frame {

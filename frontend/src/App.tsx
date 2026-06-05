@@ -6,6 +6,15 @@ import { AnalysisCreditVaultABI, ANALYSIS_CREDIT_DEPOSIT_AMOUNT_MNT, ANALYSIS_CR
 
 const apiBase = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000'
 
+const MARKETS = [
+  { symbol: 'MNT/USDT', label: 'MNT', tone: 'Mantle native' },
+  { symbol: 'BTC/USDT', label: 'BTC', tone: 'Macro king' },
+  { symbol: 'ETH/USDT', label: 'ETH', tone: 'L1 pulse' },
+  { symbol: 'SOL/USDT', label: 'SOL', tone: 'High beta' },
+  { symbol: 'ARB/USDT', label: 'ARB', tone: 'L2 watch' },
+  { symbol: 'OP/USDT', label: 'OP', tone: 'L2 watch' },
+] as const
+
 type Candle = {
   timestamp: number
   open: number
@@ -93,6 +102,7 @@ function formatCurrency(value: number) {
 
 function App() {
   const chartContainerRef = useRef<HTMLDivElement | null>(null)
+  const [selectedSymbol, setSelectedSymbol] = useState('MNT/USDT')
   const [candles, setCandles] = useState<Candle[]>([])
   const [latestPrice, setLatestPrice] = useState<number | null>(null)
   const [marketInfo, setMarketInfo] = useState({ symbol: 'MNT/USDT', exchange: 'Loading source...', timeframe: '1H' })
@@ -126,6 +136,7 @@ function App() {
 
   const creditVaultConfigured = Boolean(ANALYSIS_CREDIT_VAULT_ADDRESS)
   const creditsRequired = billingStatus?.credit_required_for_analysis ?? ANALYSIS_CREDIT_REQUIRED
+  const selectedMarket = MARKETS.find((market) => market.symbol === selectedSymbol) ?? MARKETS[0]
   const displayedSignals = useMemo(
     () => (showAllSignals ? signals : signals.slice(0, 4)),
     [showAllSignals, signals]
@@ -158,7 +169,7 @@ function App() {
     setError(null)
 
     try {
-      const response = await fetch(`${apiBase}/api/market/candles`)
+      const response = await fetch(`${apiBase}/api/market/candles?symbol=${encodeURIComponent(selectedSymbol)}`)
       if (!response.ok) {
         const text = await response.text()
         throw new Error(text || 'Failed to fetch candles')
@@ -245,8 +256,14 @@ function App() {
   }
 
   useEffect(() => {
+    setCandles([])
+    setLatestPrice(null)
+    setAiResult(null)
+    setAiTime(null)
+    setAiError(null)
     refreshAll()
-  }, [])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedSymbol])
 
   useEffect(() => {
     if (!chartContainerRef.current) return
@@ -400,6 +417,7 @@ function App() {
         'Mantle AI Trader',
         'Authorize AI analysis credit spend',
         `Wallet: ${checksumWallet}`,
+        `Symbol: ${selectedSymbol}`,
         `Credits: ${creditsRequired}`,
         `Vault: ${ANALYSIS_CREDIT_VAULT_ADDRESS}`,
         'Network: Mantle Sepolia',
@@ -411,6 +429,7 @@ function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          symbol: selectedSymbol,
           wallet_address: checksumWallet,
           signature,
           nonce,
@@ -590,7 +609,7 @@ function App() {
       const signer = await provider.getSigner()
       const contract = new ethers.Contract(TRADE_SIGNAL_REGISTRY_ADDRESS, TradeSignalRegistryABI as any, signer) as any
 
-      const symbol = 'MNT/USDT'
+      const symbol = marketInfo.symbol || selectedSymbol
       const action = aiResult.action
       const price = Math.round((latestPrice ?? 0) * 1e8)
       const confidence = Math.round(aiResult.confidence * 100)
@@ -689,6 +708,29 @@ function App() {
             </div>
           ))}
         </section>
+
+        <section className="panel-card p-5">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <p className="kicker text-sm uppercase tracking-[0.35em]">Market selector</p>
+              <h2 className="mt-2 text-2xl font-semibold text-white">Choose your arena</h2>
+              <p className="mt-2 text-sm text-slate-400">Spend credits on the pair you actually care about.</p>
+            </div>
+            <div className="grid gap-2 sm:grid-cols-3 lg:min-w-[42rem] lg:grid-cols-6">
+              {MARKETS.map((market) => (
+                <button
+                  key={market.symbol}
+                  onClick={() => setSelectedSymbol(market.symbol)}
+                  className={`market-button p-3 text-left ${selectedSymbol === market.symbol ? 'active' : ''}`}
+                >
+                  <span className="block text-base font-semibold text-white">{market.label}</span>
+                  <span className="mt-1 block text-xs text-slate-400">{market.tone}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </section>
+
         <section className="signal-board mt-6 p-6">
           <div className="flex items-center justify-between">
             <div>
@@ -767,7 +809,7 @@ function App() {
             <div className="mt-5 flex flex-wrap gap-3 text-sm text-slate-400">
               <span className="rounded-full border border-slate-700 px-3 py-1">1H</span>
               <span className="rounded-full border border-slate-700 px-3 py-1">{marketInfo.exchange}</span>
-              <span className="rounded-full border border-slate-700 px-3 py-1">MNT/USDT</span>
+              <span className="rounded-full border border-slate-700 px-3 py-1">{selectedMarket.symbol}</span>
             </div>
           </div>
 

@@ -6,7 +6,7 @@ from typing import Literal, Optional
 from enum import Enum
 
 import ccxt
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
@@ -109,6 +109,7 @@ class AIResponseModel(BaseModel):
 
 
 class AnalyzeRequest(BaseModel):
+    symbol: str
     wallet_address: str
     signature: str
     nonce: str
@@ -119,6 +120,14 @@ class AnalyzeRequest(BaseModel):
 account = PaperAccount()
 agent_task: Optional[asyncio.Task] = None
 used_billing_nonces: set[str] = set()
+SUPPORTED_SYMBOLS = {
+    "MNT/USDT",
+    "BTC/USDT",
+    "ETH/USDT",
+    "SOL/USDT",
+    "ARB/USDT",
+    "OP/USDT",
+}
 
 ANALYSIS_CREDIT_VAULT_ABI = [
     {
@@ -195,11 +204,19 @@ def get_credit_vault_address() -> str:
     )
 
 
-def build_analysis_auth_message(wallet_address: str, amount: int, nonce: str) -> str:
+def normalize_symbol(symbol: str) -> str:
+    normalized = symbol.strip().upper()
+    if normalized not in SUPPORTED_SYMBOLS:
+        raise HTTPException(status_code=400, detail=f"Unsupported symbol: {symbol}")
+    return normalized
+
+
+def build_analysis_auth_message(wallet_address: str, amount: int, nonce: str, symbol: str) -> str:
     return (
         "Mantle AI Trader\n"
         "Authorize AI analysis credit spend\n"
         f"Wallet: {wallet_address}\n"
+        f"Symbol: {symbol}\n"
         f"Credits: {amount}\n"
         f"Vault: {get_credit_vault_address()}\n"
         "Network: Mantle Sepolia\n"
@@ -226,7 +243,7 @@ def get_billing_contract():
     )
 
 
-def verify_analysis_signature(wallet_address: str, signature: str, nonce: str, amount: int) -> str:
+def verify_analysis_signature(wallet_address: str, signature: str, nonce: str, amount: int, symbol: str) -> str:
     if Account is None or encode_defunct is None or Web3 is None:
         raise HTTPException(status_code=500, detail="eth-account SDK not available")
 
@@ -235,7 +252,7 @@ def verify_analysis_signature(wallet_address: str, signature: str, nonce: str, a
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid wallet address")
 
-    message = build_analysis_auth_message(checksum_wallet, amount, nonce)
+    message = build_analysis_auth_message(checksum_wallet, amount, nonce, symbol)
     try:
         recovered = Account.recover_message(encode_defunct(text=message), signature=signature)
     except Exception as exc:
@@ -563,8 +580,8 @@ async def health():
 
 
 @app.get("/api/market/candles")
-async def get_market_candles():
-    symbol = os.getenv("TRADING_SYMBOL", os.getenv("SYMBOL", "MNT/USDT"))
+async def get_market_candles(symbol: str = Query(default="MNT/USDT")):
+    symbol = normalize_symbol(symbol)
     ohlcv = await fetch_candles(symbol, "1h", 102)
     
     closed_candles = ohlcv
@@ -615,7 +632,7 @@ async def billing_status():
 
 @app.post("/api/ai/analyze")
 async def ai_analyze(request: AnalyzeRequest):
-    symbol = os.getenv("TRADING_SYMBOL", os.getenv("SYMBOL", "MNT/USDT"))
+    symbol = normalize_symbol(request.symbol)
     credit_amount = get_credit_required()
     if request.nonce in used_billing_nonces:
         raise HTTPException(status_code=409, detail="Billing nonce already used")
@@ -625,6 +642,7 @@ async def ai_analyze(request: AnalyzeRequest):
         request.signature,
         request.nonce,
         credit_amount,
+        symbol,
     )
     await run_in_threadpool(assert_billing_can_consume)
     balance = await run_in_threadpool(get_credit_balance, wallet_address)
