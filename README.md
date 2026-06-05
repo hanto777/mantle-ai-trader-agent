@@ -70,6 +70,39 @@ npm install && npm run build
 
 - `TradeSignalRegistry` verified contract: https://sepolia.mantlescan.xyz/address/0x9Fa694367e58eB96cEB29aCF653d5880f843070D#code
 
+## Business Model
+
+This branch adds a testnet-only demo credit system for protecting Gemini analysis from unlimited free usage.
+
+- Users deposit Mantle Sepolia test MNT into `AnalysisCreditVault`.
+- The vault converts test MNT deposits into AI analysis credits.
+- The frontend can display a connected wallet's credit balance and start a test deposit flow.
+- The backend exposes `GET /api/billing/status` as an architectural placeholder.
+- The current MVP does not automatically consume credits and does not block Gemini analysis.
+
+Demo Mantle Sepolia vault:
+
+```text
+AnalysisCreditVault=0x58423C0BEF508aDD4F7C9CaaE34366780FD3A28d
+```
+
+Important constraints:
+
+- This is only for Mantle Sepolia testnet.
+- Do not use real funds.
+- This is not production custody.
+- `TradeSignalRegistry` is unchanged.
+- Existing Gemini analysis, paper trading, and on-chain signal recording remain separate from billing.
+
+Future production flow:
+
+```text
+wallet signature -> backend verifies user -> backend checks credits -> Gemini request -> consume credit
+```
+
+The backend should only call `consumeCredit(address user, uint256 amount)` after it verifies the signed wallet identity, confirms the user has enough credits, and completes the Gemini request flow.
+
 ## API
 
 - `GET /health` returns `{ "ok": true }`
+- `GET /api/billing/status` returns demo billing metadata for the future credit-gated AI analysis flow.

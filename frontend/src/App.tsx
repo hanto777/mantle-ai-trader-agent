@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { createChart, type CandlestickData, type UTCTimestamp } from 'lightweight-charts'
 import { ethers } from 'ethers'
 import { TradeSignalRegistryABI, TRADE_SIGNAL_REGISTRY_ADDRESS, MANTLE_SEPOLIA_CHAIN_ID, MANTLE_SEPOLIA_CHAIN_ID_HEX, MANTLE_SEPOLIA_RPC } from './abi/TradeSignalRegistry'
+import { AnalysisCreditVaultABI, ANALYSIS_CREDIT_DEPOSIT_AMOUNT_MNT, ANALYSIS_CREDIT_REQUIRED, ANALYSIS_CREDIT_VAULT_ADDRESS } from './abi/AnalysisCreditVault'
 
 const apiBase = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000'
 
@@ -74,6 +75,15 @@ type TradesResponse = {
   trades_history: Trade[]
 }
 
+type BillingStatus = {
+  enabled: boolean
+  network: string
+  credit_required_for_analysis: number
+  contract_address: string | null
+  auto_consume_enabled: boolean
+  note: string
+}
+
 function formatCurrency(value: number) {
   return `$${value.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',')}`
 }
@@ -102,6 +112,16 @@ function App() {
   const [txHash, setTxHash] = useState<string | null>(null)
   const [signals, setSignals] = useState<any[]>([])
   const [loadingSignals, setLoadingSignals] = useState(false)
+  const [billingStatus, setBillingStatus] = useState<BillingStatus | null>(null)
+  const [credits, setCredits] = useState<number | null>(null)
+  const [creditRate, setCreditRate] = useState<number | null>(null)
+  const [creditVaultPaused, setCreditVaultPaused] = useState(false)
+  const [creditsLoading, setCreditsLoading] = useState(false)
+  const [creditsError, setCreditsError] = useState<string | null>(null)
+  const [depositLoading, setDepositLoading] = useState(false)
+
+  const creditVaultConfigured = Boolean(ANALYSIS_CREDIT_VAULT_ADDRESS)
+  const creditsRequired = billingStatus?.credit_required_for_analysis ?? ANALYSIS_CREDIT_REQUIRED
 
   const stats = useMemo(() => {
     if (!account) {
@@ -201,8 +221,19 @@ function App() {
     }
   }
 
+  const fetchBillingStatus = async () => {
+    try {
+      const response = await fetch(`${apiBase}/api/billing/status`)
+      if (!response.ok) return
+      const data = (await response.json()) as BillingStatus
+      setBillingStatus(data)
+    } catch {
+      // Billing is a demo placeholder and should never block the MVP.
+    }
+  }
+
   const refreshAll = async () => {
-    await Promise.all([fetchMarketCandles(), fetchAgentStatus(), fetchTrades()])
+    await Promise.all([fetchMarketCandles(), fetchAgentStatus(), fetchTrades(), fetchBillingStatus()])
   }
 
   useEffect(() => {
@@ -359,6 +390,37 @@ function App() {
     }
   }
 
+  const loadCreditBalance = async () => {
+    if (!walletAddress || !creditVaultConfigured) {
+      setCredits(null)
+      setCreditRate(null)
+      setCreditVaultPaused(false)
+      return
+    }
+
+    setCreditsLoading(true)
+    setCreditsError(null)
+    try {
+      const eth = (window as any).ethereum
+      const provider = eth ? new ethers.BrowserProvider(eth) : new ethers.JsonRpcProvider(MANTLE_SEPOLIA_RPC)
+      const contract = new ethers.Contract(ANALYSIS_CREDIT_VAULT_ADDRESS, AnalysisCreditVaultABI as any, provider) as any
+      const [balanceBn, rateBn, paused] = await Promise.all([
+        contract.creditsOf(walletAddress),
+        contract.creditsPerMnt(),
+        contract.paused(),
+      ])
+
+      setCredits(Number(balanceBn?.toString ? balanceBn.toString() : balanceBn))
+      setCreditRate(Number(rateBn?.toString ? rateBn.toString() : rateBn))
+      setCreditVaultPaused(Boolean(paused))
+    } catch (e: any) {
+      console.error('loadCreditBalance', e)
+      setCreditsError(e?.message || 'Failed to load AI credits')
+    } finally {
+      setCreditsLoading(false)
+    }
+  }
+
   // --- Wallet helpers ---
   const shorten = (addr: string) => `${addr.slice(0, 6)}...${addr.slice(-4)}`
 
@@ -438,6 +500,30 @@ function App() {
     await detectNetwork()
   }
 
+  const depositCredits = async () => {
+    if (!creditVaultConfigured) return alert('AnalysisCreditVault is not deployed/configured yet')
+    if (!walletAddress) return alert('Connect your wallet first')
+    if (!isCorrectNetwork) return alert('Switch to Mantle Sepolia network')
+
+    setDepositLoading(true)
+    setCreditsError(null)
+    try {
+      const eth = (window as any).ethereum
+      const provider = new ethers.BrowserProvider(eth)
+      const signer = await provider.getSigner()
+      const contract = new ethers.Contract(ANALYSIS_CREDIT_VAULT_ADDRESS, AnalysisCreditVaultABI as any, signer) as any
+      const tx = await contract.deposit({ value: ethers.parseEther(ANALYSIS_CREDIT_DEPOSIT_AMOUNT_MNT) })
+      setTxHash(tx.hash)
+      await tx.wait()
+      await loadCreditBalance()
+    } catch (e: any) {
+      console.error('depositCredits', e)
+      setCreditsError(e?.message || 'Failed to deposit test MNT')
+    } finally {
+      setDepositLoading(false)
+    }
+  }
+
   // --- Contract interaction ---
   const recordAiSignalOnChain = async () => {
     if (!aiResult) return
@@ -506,6 +592,11 @@ function App() {
     loadSignals()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  useEffect(() => {
+    loadCreditBalance()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [walletAddress, isCorrectNetwork])
 
   return (
     <div className="min-h-screen bg-bg text-slate-100 px-4 py-6 sm:px-6 lg:px-8">
@@ -620,11 +711,85 @@ function App() {
 
           <div className="space-y-4">
             <div className="rounded-3xl border border-border/70 bg-panel/80 p-6 shadow-glow backdrop-blur">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="text-sm uppercase tracking-[0.35em] text-slate-400">AI Credits</p>
+                  <h2 className="mt-2 text-2xl font-semibold text-white">
+                    {creditsLoading ? 'Loading...' : credits !== null ? `${credits} credits` : 'Not connected'}
+                  </h2>
+                </div>
+                <span className="rounded-full bg-emerald-500/10 px-3 py-1 text-xs font-semibold text-emerald-200">
+                  Mantle Sepolia
+                </span>
+              </div>
+              <div className="mt-4 space-y-2 text-sm text-slate-300">
+                <div className="flex items-center justify-between">
+                  <span>Required per analysis</span>
+                  <span>{creditsRequired} credit</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span>Credit rate</span>
+                  <span>{creditRate ? `${creditRate} / MNT` : '-'}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span>Vault</span>
+                  <span className="max-w-[10rem] truncate text-right text-slate-400">
+                    {creditVaultConfigured ? ANALYSIS_CREDIT_VAULT_ADDRESS : 'Not deployed'}
+                  </span>
+                </div>
+              </div>
+              {!creditVaultConfigured && (
+                <div className="mt-4 rounded-2xl border border-yellow-400/20 bg-yellow-400/10 p-3 text-sm text-yellow-200">
+                  Demo vault address is not configured yet. Set VITE_ANALYSIS_CREDIT_VAULT_ADDRESS after deploying to Mantle Sepolia.
+                </div>
+              )}
+              {walletAddress && credits === 0 && (
+                <div className="mt-4 rounded-2xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200">
+                  You have 0 AI credits. Future production analysis requests will require credits before Gemini runs.
+                </div>
+              )}
+              {creditVaultPaused && (
+                <div className="mt-4 rounded-2xl border border-yellow-400/20 bg-yellow-400/10 p-3 text-sm text-yellow-200">
+                  Credit deposits are paused by the vault owner.
+                </div>
+              )}
+              {creditsError && (
+                <div className="mt-4 rounded-2xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200">
+                  {creditsError}
+                </div>
+              )}
+              <div className="mt-5 grid gap-3">
+                <button
+                  onClick={depositCredits}
+                  disabled={depositLoading || !walletAddress || !isCorrectNetwork || !creditVaultConfigured || creditVaultPaused}
+                  className="rounded-2xl bg-emerald-600 px-4 py-3 text-sm font-semibold text-white transition disabled:opacity-60"
+                >
+                  {depositLoading ? 'Depositing...' : 'Deposit test MNT for credits'}
+                </button>
+                <button
+                  onClick={loadCreditBalance}
+                  disabled={!walletAddress || !creditVaultConfigured || creditsLoading}
+                  className="rounded-2xl bg-slate-800 px-4 py-3 text-sm font-semibold text-slate-100 transition disabled:opacity-60"
+                >
+                  Refresh credits
+                </button>
+              </div>
+            </div>
+
+            <div className="rounded-3xl border border-border/70 bg-panel/80 p-6 shadow-glow backdrop-blur">
               <p className="text-sm uppercase tracking-[0.35em] text-slate-400">Market analysis</p>
               <h2 className="mt-3 text-2xl font-semibold text-white">Price momentum overview</h2>
               <p className="mt-4 text-sm leading-6 text-slate-300">
                 Live {marketInfo.exchange} candlestick data for the selected spot pair in an easy-to-read trading interface.
               </p>
+              <div className="mt-4 rounded-2xl border border-slate-700 bg-slate-950/60 p-3 text-sm text-slate-300">
+                Analyze Now requires {creditsRequired} demo AI credit. Credits are displayed from Mantle Sepolia, but this MVP does not auto-consume them yet.
+              </div>
+              {walletAddress && credits === 0 && (
+                <div className="mt-3 rounded-2xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200">
+                  Credit balance is 0. Deposit test MNT for credits before the future gated Gemini flow is enabled.
+                </div>
+              )}
               <div className="mt-6 space-y-3 rounded-3xl bg-slate-900/80 p-4 text-sm text-slate-300">
                 {aiLoading ? (
                   <div className="py-4 text-center">Analysis running...</div>

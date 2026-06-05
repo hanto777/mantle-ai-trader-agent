@@ -443,6 +443,25 @@ async def ai_status():
     return {"configured": configured, "model": model}
 
 
+@app.get("/api/billing/status")
+async def billing_status():
+    contract_address = os.getenv(
+        "ANALYSIS_CREDIT_VAULT_ADDRESS",
+        "0x58423C0BEF508aDD4F7C9CaaE34366780FD3A28d",
+    )
+    return {
+        "enabled": False,
+        "network": "Mantle Sepolia testnet",
+        "credit_required_for_analysis": int(os.getenv("ANALYSIS_CREDIT_REQUIRED", "1")),
+        "contract_address": contract_address or None,
+        "auto_consume_enabled": False,
+        "note": (
+            "Demo billing placeholder only. The current MVP does not consume credits "
+            "before Gemini analysis."
+        ),
+    }
+
+
 @app.post("/api/ai/analyze")
 async def ai_analyze():
     symbol = os.getenv("TRADING_SYMBOL", os.getenv("SYMBOL", "MNT/USDT"))
