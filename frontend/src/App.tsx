@@ -424,7 +424,14 @@ function App() {
       } else {
         setAiTime(new Date().toLocaleString())
       }
-      await loadCreditBalance()
+      if (data.credits_consumed) {
+        setCredits((current) => (
+          current === null ? current : Math.max(current - (data.credits_consumed ?? 0), 0)
+        ))
+      }
+      window.setTimeout(() => {
+        loadCreditBalance()
+      }, 5000)
     } catch (e: any) {
       setAiError(getFriendlyAiError(e?.message || ''))
     } finally {
