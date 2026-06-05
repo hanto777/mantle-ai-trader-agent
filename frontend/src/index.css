@@ -12,8 +12,10 @@ html {
 
 body {
   min-height: 100vh;
-  background: radial-gradient(circle at top, rgba(109, 92, 255, 0.18), transparent 30%),
-    linear-gradient(180deg, #060b17 0%, #090f1f 100%);
+  background:
+    radial-gradient(circle at 12% 8%, rgba(35, 211, 255, 0.18), transparent 26rem),
+    radial-gradient(circle at 78% 4%, rgba(125, 92, 255, 0.22), transparent 24rem),
+    linear-gradient(135deg, #050916 0%, #0a1325 48%, #07111f 100%);
 }
 
 * {
@@ -22,4 +24,167 @@ body {
 
 button {
   font: inherit;
+}
+
+@layer components {
+  .app-shell {
+    background:
+      linear-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px);
+    background-size: 44px 44px;
+  }
+
+  .hero-strip,
+  .panel-card,
+  .metric-card,
+  .signal-board {
+    border: 1px solid rgba(117, 141, 255, 0.22);
+    border-radius: 8px;
+    background:
+      linear-gradient(145deg, rgba(17, 27, 49, 0.92), rgba(8, 16, 32, 0.9)),
+      radial-gradient(circle at top right, rgba(45, 212, 191, 0.12), transparent 18rem);
+    box-shadow: 0 20px 80px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    backdrop-filter: blur(18px);
+  }
+
+  .hero-strip {
+    padding: 24px;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .hero-strip::after {
+    content: "";
+    position: absolute;
+    inset: auto 24px 0 24px;
+    height: 2px;
+    background: linear-gradient(90deg, #26f4c7, #7c5cff, #f9c74f);
+    opacity: 0.85;
+  }
+
+  .kicker {
+    color: #8ee7ff;
+  }
+
+  .wallet-pill,
+  .price-chip,
+  .status-chip {
+    border: 1px solid rgba(148, 163, 184, 0.2);
+    border-radius: 8px;
+    background: rgba(4, 12, 26, 0.72);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  }
+
+  .metric-card {
+    position: relative;
+    overflow: hidden;
+  }
+
+  .metric-card::before {
+    content: "";
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 3px;
+    background: linear-gradient(180deg, #26f4c7, #7c5cff);
+  }
+
+  .signal-board {
+    max-height: none;
+  }
+
+  .signal-card,
+  .sub-panel,
+  .result-card,
+  .info-card,
+  .empty-state,
+  .mini-row,
+  .chart-frame {
+    border: 1px solid rgba(71, 85, 105, 0.55);
+    border-radius: 8px;
+    background: rgba(2, 8, 23, 0.68);
+  }
+
+  .signal-card {
+    min-height: 164px;
+    transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
+  }
+
+  .signal-card:hover {
+    transform: translateY(-2px);
+    border-color: rgba(38, 244, 199, 0.45);
+    background: rgba(5, 19, 38, 0.82);
+  }
+
+  .chart-frame {
+    box-shadow: inset 0 0 42px rgba(38, 244, 199, 0.05);
+  }
+
+  .credit-card {
+    border-color: rgba(38, 244, 199, 0.32);
+  }
+
+  .analysis-card {
+    border-color: rgba(249, 199, 79, 0.24);
+  }
+
+  .alert-card {
+    border: 1px solid rgba(248, 113, 113, 0.35);
+    border-radius: 8px;
+    background: rgba(127, 29, 29, 0.22);
+  }
+
+  .command-button,
+  .ghost-button,
+  .warning-button {
+    border-radius: 8px;
+    border: 1px solid transparent;
+    transition: transform 150ms ease, box-shadow 150ms ease, background 150ms ease, opacity 150ms ease;
+  }
+
+  .command-button {
+    background: linear-gradient(135deg, #11c995, #19a7ce);
+    color: white;
+    box-shadow: 0 10px 28px rgba(17, 201, 149, 0.22);
+  }
+
+  .command-button.alt {
+    background: linear-gradient(135deg, #7c5cff, #24c6dc);
+  }
+
+  .warning-button {
+    background: linear-gradient(135deg, #f9c74f, #f97316);
+    color: #111827;
+  }
+
+  .ghost-button {
+    border-color: rgba(148, 163, 184, 0.22);
+    background: rgba(15, 23, 42, 0.82);
+    color: #e2e8f0;
+  }
+
+  .command-button:hover,
+  .ghost-button:hover,
+  .warning-button:hover {
+    transform: translateY(-1px);
+  }
+
+  .command-button:disabled,
+  .ghost-button:disabled,
+  .warning-button:disabled {
+    transform: none;
+    cursor: not-allowed;
+  }
+
+  .compact {
+    padding: 4px 10px;
+    font-size: 12px;
+    font-weight: 700;
+  }
+
+  .line-clamp-3 {
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
 }

@@ -122,9 +122,14 @@ function App() {
   const [creditsLoading, setCreditsLoading] = useState(false)
   const [creditsError, setCreditsError] = useState<string | null>(null)
   const [depositLoading, setDepositLoading] = useState(false)
+  const [showAllSignals, setShowAllSignals] = useState(false)
 
   const creditVaultConfigured = Boolean(ANALYSIS_CREDIT_VAULT_ADDRESS)
   const creditsRequired = billingStatus?.credit_required_for_analysis ?? ANALYSIS_CREDIT_REQUIRED
+  const displayedSignals = useMemo(
+    () => (showAllSignals ? signals : signals.slice(0, 4)),
+    [showAllSignals, signals]
+  )
 
   const stats = useMemo(() => {
     if (!account) {
@@ -647,18 +652,18 @@ function App() {
   }, [walletAddress, isCorrectNetwork])
 
   return (
-    <div className="min-h-screen bg-bg text-slate-100 px-4 py-6 sm:px-6 lg:px-8">
+    <div className="app-shell min-h-screen text-slate-100 px-4 py-6 sm:px-6 lg:px-8">
       <div className="mx-auto max-w-7xl space-y-6">
-        <header className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+        <header className="hero-strip flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <p className="text-sm uppercase tracking-[0.35em] text-slate-400">MANTLE AI TRADER</p>
-            <h1 className="mt-3 text-4xl font-semibold text-white tracking-tight">Crypto Trading Dashboard</h1>
-            <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-400">
-              Live Bybit spot candles for MNT/USDT with a clean trading dashboard.
+            <p className="kicker text-sm uppercase tracking-[0.35em]">MANTLE AI TRADER</p>
+            <h1 className="mt-3 text-4xl font-semibold text-white tracking-tight sm:text-5xl">Signal Arcade</h1>
+            <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-300">
+              AI market reads, demo credits, paper trading, and Mantle Sepolia receipts in one playful control room.
             </p>
           </div>
-          <div className="inline-flex items-center gap-3 rounded-full bg-slate-900/80 px-4 py-2 text-sm text-slate-200 ring-1 ring-white/10 shadow-sm">
-            <span className="inline-flex h-7 items-center rounded-full bg-violet-500/20 px-3 text-violet-200">PAPER TRADING</span>
+          <div className="wallet-pill inline-flex items-center gap-3 px-4 py-2 text-sm text-slate-200">
+            <span className="inline-flex h-7 items-center rounded-md bg-violet-500/20 px-3 text-violet-100">PAPER TRADING</span>
             <div className="ml-3 flex items-center gap-3">
               {walletAddress ? (
                 <div className="flex items-center gap-3">
@@ -666,10 +671,10 @@ function App() {
                   <div className="text-xs text-slate-400">{networkName || '-'}</div>
                 </div>
               ) : (
-                <button onClick={connectWallet} className="rounded-md bg-emerald-600 px-3 py-1 text-xs font-semibold">Connect Wallet</button>
+                <button onClick={connectWallet} className="command-button compact">Connect Wallet</button>
               )}
               {!isCorrectNetwork && (
-                <button onClick={switchToMantleSepolia} className="rounded-md bg-yellow-600 px-3 py-1 text-xs font-semibold">Switch to Mantle Sepolia</button>
+                <button onClick={switchToMantleSepolia} className="warning-button compact">Switch to Mantle Sepolia</button>
               )}
             </div>
           </div>
@@ -677,22 +682,22 @@ function App() {
 
         <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
           {stats.map((card) => (
-            <div key={card.label} className="rounded-3xl border border-border/70 bg-panel/80 p-5 shadow-glow backdrop-blur">
+            <div key={card.label} className="metric-card p-5">
               <p className="text-sm text-slate-400">{card.label}</p>
               <p className="mt-4 text-3xl font-semibold text-white">{card.value}</p>
               <p className="mt-2 text-sm text-slate-400">{card.trend}</p>
             </div>
           ))}
         </section>
-        <section className="mt-6 rounded-3xl border border-border/70 bg-panel/80 p-6 shadow-glow backdrop-blur">
+        <section className="signal-board mt-6 p-6">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm uppercase tracking-[0.35em] text-slate-400">On-chain Signals</p>
-              <h2 className="mt-2 text-2xl font-semibold text-white">TradeSignalRegistry (Mantle Sepolia)</h2>
+              <p className="kicker text-sm uppercase tracking-[0.35em]">On-chain Signals</p>
+              <h2 className="mt-2 text-2xl font-semibold text-white">Latest signal drops</h2>
             </div>
             <div className="flex items-center gap-3">
               <a href={`https://explorer.sepolia.mantle.xyz/address/${TRADE_SIGNAL_REGISTRY_ADDRESS}`} target="_blank" rel="noreferrer" className="text-sm text-slate-400 underline">View contract</a>
-              <button onClick={loadSignals} className="rounded-2xl bg-slate-900/90 px-4 py-2 text-sm font-semibold text-slate-100">Refresh</button>
+              <button onClick={loadSignals} className="ghost-button">Refresh</button>
             </div>
           </div>
 
@@ -708,45 +713,54 @@ function App() {
             ) : signals.length === 0 ? (
               <div className="py-6 text-center text-slate-400">No on-chain signals yet</div>
             ) : (
-              <div className="space-y-3">
-                {signals.map((s, idx) => (
-                  <div key={`${s.trader}-${idx}`} className="rounded-2xl border border-slate-800 bg-slate-950/80 p-3 text-sm text-slate-300">
+              <>
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                {displayedSignals.map((s, idx) => (
+                  <div key={`${s.trader}-${idx}`} className="signal-card p-3 text-sm text-slate-300">
                     <div className="flex justify-between text-slate-400">
                       <span>{shorten(s.trader)}</span>
                       <span>{new Date(s.timestamp * 1000).toLocaleString()}</span>
                     </div>
-                    <div className="mt-2 grid gap-2 sm:grid-cols-3">
+                    <div className="mt-3 grid gap-2">
                       <div>Pair {s.symbol}</div>
                       <div>Action {s.action}</div>
                       <div>Price {(s.price / 1e8).toFixed(6)}</div>
                     </div>
                     <div className="mt-2 text-slate-400">Confidence: {s.confidence}%</div>
-                    <div className="mt-2 text-slate-300">{s.reason}</div>
+                    <div className="mt-2 line-clamp-3 text-slate-300">{s.reason}</div>
                   </div>
                 ))}
               </div>
+              {signals.length > 4 && (
+                <div className="mt-4 flex justify-center">
+                  <button onClick={() => setShowAllSignals((value) => !value)} className="ghost-button">
+                    {showAllSignals ? 'Show less' : `Show ${signals.length - 4} more`}
+                  </button>
+                </div>
+              )}
+              </>
             )}
           </div>
         </section>
 
         <section className="grid gap-4 xl:grid-cols-[2fr_1fr]">
-          <div className="rounded-3xl border border-border/70 bg-panel/80 p-6 shadow-glow backdrop-blur">
+          <div className="panel-card chart-card p-6">
             <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <p className="text-sm uppercase tracking-[0.35em] text-slate-400">Market view</p>
                 <h2 className="mt-2 text-2xl font-semibold text-white">{marketInfo.symbol}</h2>
                 <p className="mt-1 text-sm text-slate-400">{marketInfo.exchange} • {marketInfo.timeframe}</p>
               </div>
-              <div className="rounded-2xl bg-slate-900/80 px-3 py-1 text-sm text-slate-300">
+              <div className="price-chip px-3 py-1 text-sm text-slate-200">
                 {loading ? 'Loading...' : latestPrice ? `$${latestPrice.toFixed(6)}` : 'Price unavailable'}
               </div>
             </div>
             {error ? (
-              <div className="mt-8 rounded-3xl border border-red-500/30 bg-red-500/10 p-5 text-sm text-red-200">
+              <div className="alert-card mt-8 p-5 text-sm text-red-200">
                 Error loading candles: {error}
               </div>
             ) : (
-              <div className="mt-8 overflow-hidden rounded-[2rem] border border-border/60 bg-slate-950/70 p-4">
+              <div className="chart-frame mt-8 overflow-hidden p-4">
                 <div ref={chartContainerRef} className="h-[360px] w-full" />
               </div>
             )}
@@ -758,7 +772,7 @@ function App() {
           </div>
 
           <div className="space-y-4">
-            <div className="rounded-3xl border border-border/70 bg-panel/80 p-6 shadow-glow backdrop-blur">
+            <div className="panel-card credit-card p-6">
               <div className="flex items-start justify-between gap-4">
                 <div>
                   <p className="text-sm uppercase tracking-[0.35em] text-slate-400">AI Credits</p>
@@ -766,7 +780,7 @@ function App() {
                     {creditsLoading ? 'Loading...' : credits !== null ? `${credits} credits` : 'Not connected'}
                   </h2>
                 </div>
-                <span className="rounded-full bg-emerald-500/10 px-3 py-1 text-xs font-semibold text-emerald-200">
+                <span className="status-chip px-3 py-1 text-xs font-semibold text-emerald-100">
                   Mantle Sepolia
                 </span>
               </div>
@@ -810,27 +824,27 @@ function App() {
                 <button
                   onClick={depositCredits}
                   disabled={depositLoading || !walletAddress || !isCorrectNetwork || !creditVaultConfigured || creditVaultPaused}
-                  className="rounded-2xl bg-emerald-600 px-4 py-3 text-sm font-semibold text-white transition disabled:opacity-60"
+                  className="command-button px-4 py-3 text-sm font-semibold text-white transition disabled:opacity-60"
                 >
                   {depositLoading ? 'Depositing...' : 'Deposit test MNT for credits'}
                 </button>
                 <button
                   onClick={loadCreditBalance}
                   disabled={!walletAddress || !creditVaultConfigured || creditsLoading}
-                  className="rounded-2xl bg-slate-800 px-4 py-3 text-sm font-semibold text-slate-100 transition disabled:opacity-60"
+                  className="ghost-button px-4 py-3 text-sm font-semibold text-slate-100 transition disabled:opacity-60"
                 >
                   Refresh credits
                 </button>
               </div>
             </div>
 
-            <div className="rounded-3xl border border-border/70 bg-panel/80 p-6 shadow-glow backdrop-blur">
+            <div className="panel-card analysis-card p-6">
               <p className="text-sm uppercase tracking-[0.35em] text-slate-400">Market analysis</p>
               <h2 className="mt-3 text-2xl font-semibold text-white">Price momentum overview</h2>
               <p className="mt-4 text-sm leading-6 text-slate-300">
                 Live {marketInfo.exchange} candlestick data for the selected spot pair in an easy-to-read trading interface.
               </p>
-              <div className="mt-4 rounded-2xl border border-slate-700 bg-slate-950/60 p-3 text-sm text-slate-300">
+              <div className="info-card mt-4 p-3 text-sm text-slate-300">
                 Analyze Now requires {creditsRequired} demo AI credit and a wallet signature. Credits are consumed on Mantle Sepolia after Gemini returns an analysis.
               </div>
               {walletAddress && credits === 0 && (
@@ -838,7 +852,7 @@ function App() {
                   Credit balance is 0. Deposit test MNT for credits before the future gated Gemini flow is enabled.
                 </div>
               )}
-              <div className="mt-6 space-y-3 rounded-3xl bg-slate-900/80 p-4 text-sm text-slate-300">
+              <div className="result-card mt-6 space-y-3 p-4 text-sm text-slate-300">
                 {aiLoading ? (
                   <div className="py-4 text-center">Analysis running...</div>
                 ) : aiError ? (
@@ -891,7 +905,7 @@ function App() {
                   <button
                     onClick={recordAiSignalOnChain}
                     disabled={!walletAddress || !isCorrectNetwork}
-                    className="mr-3 rounded-2xl bg-emerald-600 px-4 py-3 text-sm font-semibold text-white transition disabled:opacity-60"
+                    className="command-button mr-3 px-4 py-3 text-sm font-semibold text-white transition disabled:opacity-60"
                   >
                     Record AI Signal On-chain
                   </button>
@@ -899,14 +913,14 @@ function App() {
                 <button
                   onClick={analyzeNow}
                   disabled={aiLoading || !walletAddress || !isCorrectNetwork || (credits ?? 0) < creditsRequired}
-                  className="rounded-2xl bg-slate-800 px-4 py-3 text-sm font-semibold text-slate-100 transition disabled:opacity-60"
+                  className="ghost-button px-4 py-3 text-sm font-semibold text-slate-100 transition disabled:opacity-60"
                 >
                   {aiLoading ? 'Analyzing…' : 'Analyze Now'}
                 </button>
               </div>
             </div>
 
-            <div className="rounded-3xl border border-border/70 bg-panel/80 p-6 shadow-glow backdrop-blur">
+            <div className="panel-card p-6">
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm uppercase tracking-[0.35em] text-slate-400">Agent controls</p>
@@ -920,21 +934,21 @@ function App() {
                 <button
                   onClick={() => handleAgentAction('start')}
                   disabled={controlLoading || account?.agent_running}
-                  className="rounded-2xl bg-accent px-4 py-3 text-sm font-semibold text-white transition disabled:opacity-60"
+                  className="command-button alt px-4 py-3 text-sm font-semibold text-white transition disabled:opacity-60"
                 >
                   Start Agent
                 </button>
                 <button
                   onClick={() => handleAgentAction('stop')}
                   disabled={controlLoading || !account?.agent_running}
-                  className="rounded-2xl bg-slate-800 px-4 py-3 text-sm font-semibold text-slate-100 transition disabled:opacity-60"
+                  className="ghost-button px-4 py-3 text-sm font-semibold text-slate-100 transition disabled:opacity-60"
                 >
                   Stop Agent
                 </button>
                 <button
                   onClick={handleReset}
                   disabled={controlLoading}
-                  className="rounded-2xl border border-slate-700 bg-slate-900/90 px-4 py-3 text-sm font-semibold text-slate-100 transition disabled:opacity-60"
+                  className="ghost-button px-4 py-3 text-sm font-semibold text-slate-100 transition disabled:opacity-60"
                 >
                   Reset Account
                 </button>
@@ -946,7 +960,7 @@ function App() {
               )}
             </div>
 
-            <div className="rounded-3xl border border-border/70 bg-panel/80 p-6 shadow-glow backdrop-blur">
+            <div className="panel-card p-6">
               <p className="text-sm uppercase tracking-[0.35em] text-slate-400">Account snapshot</p>
               <div className="mt-4 space-y-3 text-sm text-slate-300">
                 <div className="flex items-center justify-between">
@@ -975,7 +989,7 @@ function App() {
         </section>
 
         <section className="grid gap-4 xl:grid-cols-[2fr_1fr]">
-          <div className="rounded-3xl border border-border/70 bg-panel/80 p-6 shadow-glow backdrop-blur">
+          <div className="panel-card p-6">
             <div className="flex items-center justify-between gap-4">
               <div>
                 <p className="text-sm uppercase tracking-[0.35em] text-slate-400">Trade history</p>
@@ -983,14 +997,14 @@ function App() {
               </div>
               <button
                 onClick={fetchTrades}
-                className="rounded-2xl bg-slate-900/90 px-4 py-2 text-sm font-semibold text-slate-100 transition hover:bg-slate-800"
+                className="ghost-button px-4 py-2 text-sm font-semibold text-slate-100 transition"
               >
                 Refresh
               </button>
             </div>
 
             <div className="mt-6 space-y-6">
-              <div className="rounded-3xl border border-border/70 bg-slate-950/80 p-4">
+              <div className="sub-panel p-4">
                 <p className="text-sm uppercase tracking-[0.35em] text-slate-400">Open trade</p>
                 {trades?.open_trade ? (
                   <div className="mt-4 space-y-3 text-sm text-slate-300">
@@ -1012,16 +1026,16 @@ function App() {
                     </div>
                   </div>
                 ) : (
-                  <div className="mt-4 rounded-2xl bg-slate-900/80 p-4 text-sm text-slate-400">No open trade</div>
+                  <div className="empty-state mt-4 p-4 text-sm text-slate-400">No open trade</div>
                 )}
               </div>
 
-              <div className="rounded-3xl border border-border/70 bg-slate-950/80 p-4">
+              <div className="sub-panel p-4">
                 <p className="text-sm uppercase tracking-[0.35em] text-slate-400">Recent closes</p>
                 {trades?.trades_history?.length ? (
                   <div className="mt-4 space-y-3 text-sm text-slate-300">
                     {trades.trades_history.slice(-4).reverse().map((trade) => (
-                      <div key={trade.id} className="rounded-2xl border border-slate-800 bg-slate-900/70 p-3">
+                      <div key={trade.id} className="mini-row p-3">
                         <div className="flex justify-between text-slate-400">
                           <span>#{trade.id}</span>
                           <span>{trade.status}</span>
@@ -1036,15 +1050,15 @@ function App() {
                     ))}
                   </div>
                 ) : (
-                  <div className="mt-4 rounded-2xl bg-slate-900/80 p-4 text-sm text-slate-400">No closed trades yet</div>
+                  <div className="empty-state mt-4 p-4 text-sm text-slate-400">No closed trades yet</div>
                 )}
               </div>
             </div>
           </div>
 
-          <div className="rounded-3xl border border-border/70 bg-panel/80 p-6 shadow-glow backdrop-blur">
+          <div className="panel-card p-6">
             <p className="text-sm uppercase tracking-[0.35em] text-slate-400">Analysis & logs</p>
-            <div className="mt-4 space-y-3 rounded-3xl bg-slate-950/80 p-4 text-sm text-slate-300">
+            <div className="result-card mt-4 space-y-3 p-4 text-sm text-slate-300">
               <div className="flex justify-between border-b border-slate-800 pb-3">
                 <span>Last analysis</span>
                 <span className="text-slate-400">{aiTime || '-'}</span>
