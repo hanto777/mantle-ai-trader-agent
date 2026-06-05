@@ -70,6 +70,48 @@ npm install && npm run build
 
 - `TradeSignalRegistry` verified contract: https://sepolia.mantlescan.xyz/address/0x9Fa694367e58eB96cEB29aCF653d5880f843070D#code
 
+## Business Model
+
+This branch adds a testnet-only demo credit system for protecting Gemini analysis from unlimited free usage.
+
+- Users deposit Mantle Sepolia test MNT into `AnalysisCreditVault`.
+- The vault converts test MNT deposits into AI analysis credits.
+- The frontend can display a connected wallet's credit balance and start a test deposit flow.
+- The backend exposes `GET /api/billing/status` for billing policy and contract metadata.
+- `POST /api/ai/analyze` requires a wallet signature and enough AI credits.
+- After a successful Gemini response, the backend calls `consumeCredit` on `AnalysisCreditVault`.
+
+Demo Mantle Sepolia vault:
+
+```text
+AnalysisCreditVault=0x58423C0BEF508aDD4F7C9CaaE34366780FD3A28d
+```
+
+Important constraints:
+
+- This is only for Mantle Sepolia testnet.
+- Do not use real funds.
+- This is not production custody.
+- `TradeSignalRegistry` is unchanged.
+- Paper trading and on-chain signal recording remain separate from billing.
+
+Current credit-gated analysis flow:
+
+```text
+wallet signature -> backend verifies user -> backend checks credits -> Gemini request -> consume credit
+```
+
+Backend deployment requirements:
+
+- `ANALYSIS_CREDIT_VAULT_ADDRESS`
+- `ANALYSIS_CREDIT_REQUIRED=1`
+- `MANTLE_SEPOLIA_RPC_URL=https://rpc.sepolia.mantle.xyz`
+- `MANTLE_SEPOLIA_CHAIN_ID=5003`
+- `BILLING_OWNER_PRIVATE_KEY`
+
+`BILLING_OWNER_PRIVATE_KEY` must belong to the current `AnalysisCreditVault.owner()` account, or ownership must be transferred to a dedicated backend billing signer. Use a dedicated testnet-only signer. Do not put a real-money wallet private key in backend environment variables.
+
 ## API
 
 - `GET /health` returns `{ "ok": true }`
+- `GET /api/billing/status` returns demo billing metadata for the future credit-gated AI analysis flow.

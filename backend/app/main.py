@@ -20,6 +20,15 @@ import mplfinance as mpf
 from pydantic import BaseModel, Field
 
 try:
+    from eth_account import Account
+    from eth_account.messages import encode_defunct
+    from web3 import Web3
+except Exception:
+    Account = None
+    encode_defunct = None
+    Web3 = None
+
+try:
     from google import genai
     from google.genai import types
 except Exception:
@@ -99,10 +108,44 @@ class AIResponseModel(BaseModel):
     reason: str
 
 
+class AnalyzeRequest(BaseModel):
+    wallet_address: str
+    signature: str
+    nonce: str
+
+
 # ===== Global State =====
 
 account = PaperAccount()
 agent_task: Optional[asyncio.Task] = None
+used_billing_nonces: set[str] = set()
+
+ANALYSIS_CREDIT_VAULT_ABI = [
+    {
+        "inputs": [{"internalType": "address", "name": "user", "type": "address"}],
+        "name": "creditsOf",
+        "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        "inputs": [
+            {"internalType": "address", "name": "user", "type": "address"},
+            {"internalType": "uint256", "name": "amount", "type": "uint256"},
+        ],
+        "name": "consumeCredit",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function",
+    },
+    {
+        "inputs": [],
+        "name": "owner",
+        "outputs": [{"internalType": "address", "name": "", "type": "address"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+]
 
 
 # ===== Utility Functions =====
@@ -139,6 +182,115 @@ def normalize_gemini_response(parsed: dict) -> dict:
         except ValueError as e:
             raise ValueError(f"Invalid confidence in Gemini response: {e}")
     return parsed
+
+
+def get_credit_required() -> int:
+    return int(os.getenv("ANALYSIS_CREDIT_REQUIRED", "1"))
+
+
+def get_credit_vault_address() -> str:
+    return os.getenv(
+        "ANALYSIS_CREDIT_VAULT_ADDRESS",
+        "0x58423C0BEF508aDD4F7C9CaaE34366780FD3A28d",
+    )
+
+
+def build_analysis_auth_message(wallet_address: str, amount: int, nonce: str) -> str:
+    return (
+        "Mantle AI Trader\n"
+        "Authorize AI analysis credit spend\n"
+        f"Wallet: {wallet_address}\n"
+        f"Credits: {amount}\n"
+        f"Vault: {get_credit_vault_address()}\n"
+        "Network: Mantle Sepolia\n"
+        f"Nonce: {nonce}"
+    )
+
+
+def get_billing_contract():
+    if Web3 is None:
+        raise HTTPException(status_code=500, detail="web3 SDK not available")
+
+    rpc_url = os.getenv("MANTLE_SEPOLIA_RPC_URL", "https://rpc.sepolia.mantle.xyz")
+    vault_address = get_credit_vault_address()
+    if not vault_address:
+        raise HTTPException(status_code=500, detail="ANALYSIS_CREDIT_VAULT_ADDRESS not configured")
+
+    web3 = Web3(Web3.HTTPProvider(rpc_url))
+    if not web3.is_connected():
+        raise HTTPException(status_code=502, detail="Failed to connect to Mantle Sepolia RPC")
+
+    return web3, web3.eth.contract(
+        address=web3.to_checksum_address(vault_address),
+        abi=ANALYSIS_CREDIT_VAULT_ABI,
+    )
+
+
+def verify_analysis_signature(wallet_address: str, signature: str, nonce: str, amount: int) -> str:
+    if Account is None or encode_defunct is None or Web3 is None:
+        raise HTTPException(status_code=500, detail="eth-account SDK not available")
+
+    try:
+        checksum_wallet = Web3.to_checksum_address(wallet_address)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid wallet address")
+
+    message = build_analysis_auth_message(checksum_wallet, amount, nonce)
+    try:
+        recovered = Account.recover_message(encode_defunct(text=message), signature=signature)
+    except Exception as exc:
+        raise HTTPException(status_code=401, detail=f"Invalid wallet signature: {exc}")
+
+    if Web3.to_checksum_address(recovered) != checksum_wallet:
+        raise HTTPException(status_code=401, detail="Wallet signature does not match requester")
+
+    return checksum_wallet
+
+
+def get_credit_balance(wallet_address: str) -> int:
+    _, contract = get_billing_contract()
+    return int(contract.functions.creditsOf(wallet_address).call())
+
+
+def assert_billing_can_consume() -> None:
+    web3, contract = get_billing_contract()
+    private_key = os.getenv("BILLING_OWNER_PRIVATE_KEY")
+    if not private_key:
+        raise HTTPException(status_code=500, detail="BILLING_OWNER_PRIVATE_KEY not configured")
+
+    owner_account = web3.eth.account.from_key(private_key)
+    contract_owner = contract.functions.owner().call()
+    if web3.to_checksum_address(contract_owner) != web3.to_checksum_address(owner_account.address):
+        raise HTTPException(status_code=500, detail="Billing signer is not AnalysisCreditVault owner")
+
+
+def consume_analysis_credit(wallet_address: str, amount: int) -> str:
+    web3, contract = get_billing_contract()
+    private_key = os.getenv("BILLING_OWNER_PRIVATE_KEY")
+    if not private_key:
+        raise HTTPException(status_code=500, detail="BILLING_OWNER_PRIVATE_KEY not configured")
+
+    owner_account = web3.eth.account.from_key(private_key)
+    contract_owner = contract.functions.owner().call()
+    if web3.to_checksum_address(contract_owner) != web3.to_checksum_address(owner_account.address):
+        raise HTTPException(status_code=500, detail="Billing signer is not AnalysisCreditVault owner")
+
+    tx = contract.functions.consumeCredit(wallet_address, amount).build_transaction({
+        "from": owner_account.address,
+        "nonce": web3.eth.get_transaction_count(owner_account.address),
+        "chainId": int(os.getenv("MANTLE_SEPOLIA_CHAIN_ID", "5003")),
+        "gas": 120000,
+        "gasPrice": web3.eth.gas_price,
+    })
+
+    signed = owner_account.sign_transaction(tx)
+    raw_tx = getattr(signed, "raw_transaction", None) or signed.rawTransaction
+    tx_hash = web3.eth.send_raw_transaction(raw_tx)
+    receipt = web3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+    if receipt.status != 1:
+        raise HTTPException(status_code=502, detail="Credit consume transaction failed")
+
+    return tx_hash.hex()
 
 
 def _extract_gemini_status(exc: Exception) -> int | None:
@@ -509,10 +661,47 @@ async def ai_status():
     return {"configured": configured, "model": model}
 
 
+@app.get("/api/billing/status")
+async def billing_status():
+    contract_address = get_credit_vault_address()
+    auto_consume_enabled = bool(os.getenv("BILLING_OWNER_PRIVATE_KEY")) and Web3 is not None
+    return {
+        "enabled": True,
+        "network": "Mantle Sepolia testnet",
+        "credit_required_for_analysis": get_credit_required(),
+        "contract_address": contract_address or None,
+        "auto_consume_enabled": auto_consume_enabled,
+        "signature_required": True,
+        "note": (
+            "AI analysis requires a wallet signature and enough Mantle Sepolia demo "
+            "credits. Credits are consumed on-chain after a successful Gemini response."
+        ),
+    }
+
+
 @app.post("/api/ai/analyze")
-async def ai_analyze():
+async def ai_analyze(request: AnalyzeRequest):
     symbol = os.getenv("TRADING_SYMBOL", os.getenv("SYMBOL", "MNT/USDT"))
+    credit_amount = get_credit_required()
+    if request.nonce in used_billing_nonces:
+        raise HTTPException(status_code=409, detail="Billing nonce already used")
+
+    wallet_address = verify_analysis_signature(
+        request.wallet_address,
+        request.signature,
+        request.nonce,
+        credit_amount,
+    )
+    await run_in_threadpool(assert_billing_can_consume)
+    balance = await run_in_threadpool(get_credit_balance, wallet_address)
+    if balance < credit_amount:
+        raise HTTPException(status_code=402, detail="Insufficient AI credits")
+
     analysis = await get_gemini_analysis(symbol)
+    consume_tx_hash = await run_in_threadpool(consume_analysis_credit, wallet_address, credit_amount)
+    used_billing_nonces.add(request.nonce)
+    analysis["credits_consumed"] = credit_amount
+    analysis["credit_consume_tx_hash"] = consume_tx_hash
     return analysis
 
 
