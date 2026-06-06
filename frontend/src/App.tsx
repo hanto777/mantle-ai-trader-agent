@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { createChart, type CandlestickData, type UTCTimestamp } from 'lightweight-charts'
 import { ethers } from 'ethers'
 import { TradeSignalRegistryABI, TRADE_SIGNAL_REGISTRY_ADDRESS, MANTLE_SEPOLIA_CHAIN_ID, MANTLE_SEPOLIA_CHAIN_ID_HEX, MANTLE_SEPOLIA_RPC } from './abi/TradeSignalRegistry'
-import { AnalysisCreditVaultABI, ANALYSIS_CREDIT_DEPOSIT_AMOUNT_MNT, ANALYSIS_CREDIT_REQUIRED, ANALYSIS_CREDIT_VAULT_ADDRESS } from './abi/AnalysisCreditVault'
+import { AnalysisCreditVaultABI, ANALYSIS_CREDIT_REQUIRED, ANALYSIS_CREDIT_VAULT_ADDRESS } from './abi/AnalysisCreditVault'
 
 const apiBase = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000'
 
@@ -132,6 +132,9 @@ function App() {
   const [creditsLoading, setCreditsLoading] = useState(false)
   const [creditsError, setCreditsError] = useState<string | null>(null)
   const [depositLoading, setDepositLoading] = useState(false)
+  const [depositQuoteLoading, setDepositQuoteLoading] = useState(false)
+  const [depositModalOpen, setDepositModalOpen] = useState(false)
+  const [depositAmountMnt, setDepositAmountMnt] = useState('1')
   const [showAllSignals, setShowAllSignals] = useState(false)
   const [reasoningStepIndex, setReasoningStepIndex] = useState(0)
 
@@ -516,6 +519,29 @@ function App() {
     }
   }
 
+  const loadDepositQuote = async () => {
+    if (!creditVaultConfigured) return
+
+    setDepositQuoteLoading(true)
+    setCreditsError(null)
+    try {
+      const provider = new ethers.JsonRpcProvider(MANTLE_SEPOLIA_RPC)
+      const contract = new ethers.Contract(ANALYSIS_CREDIT_VAULT_ADDRESS, AnalysisCreditVaultABI as any, provider) as any
+      const [rateBn, paused] = await Promise.all([
+        contract.creditsPerMnt(),
+        contract.paused(),
+      ])
+      setCreditRate(Number(rateBn?.toString ? rateBn.toString() : rateBn))
+      setCreditVaultPaused(Boolean(paused))
+    } catch (e: any) {
+      console.error('loadDepositQuote', e)
+      setCreditRate(null)
+      setCreditsError('Unable to read the current credit rate from Mantle Sepolia.')
+    } finally {
+      setDepositQuoteLoading(false)
+    }
+  }
+
   // --- Wallet helpers ---
   const shorten = (addr: string) => `${addr.slice(0, 6)}...${addr.slice(-4)}`
 
@@ -603,14 +629,18 @@ function App() {
     setDepositLoading(true)
     setCreditsError(null)
     try {
+      const normalizedDepositAmount = depositAmountMnt.replace(',', '.').trim()
+      const depositValue = ethers.parseEther(normalizedDepositAmount)
+      if (depositValue <= 0n) throw new Error('Enter a deposit amount greater than 0 MNT')
       const eth = (window as any).ethereum
       const provider = new ethers.BrowserProvider(eth)
       const signer = await provider.getSigner()
       const contract = new ethers.Contract(ANALYSIS_CREDIT_VAULT_ADDRESS, AnalysisCreditVaultABI as any, signer) as any
-      const tx = await contract.deposit({ value: ethers.parseEther(ANALYSIS_CREDIT_DEPOSIT_AMOUNT_MNT) })
+      const tx = await contract.deposit({ value: depositValue })
       setTxHash(tx.hash)
       await tx.wait()
       await loadCreditBalance()
+      setDepositModalOpen(false)
     } catch (e: any) {
       console.error('depositCredits', e)
       setCreditsError(e?.message || 'Failed to deposit test MNT')
@@ -716,6 +746,22 @@ function App() {
   const latestHigh = candles.length ? Math.max(...candles.slice(-24).map((c) => c.high)) : null
   const latestLow = candles.length ? Math.min(...candles.slice(-24).map((c) => c.low)) : null
   const canAnalyze = Boolean(walletAddress && isCorrectNetwork && (credits ?? 0) >= creditsRequired && !aiLoading)
+  const normalizedDepositAmount = depositAmountMnt.replace(',', '.').trim()
+  const parsedDepositAmount = Number(normalizedDepositAmount)
+  const estimatedDepositCredits = Number.isFinite(parsedDepositAmount) && parsedDepositAmount > 0
+    ? Math.floor(parsedDepositAmount * (creditRate ?? 0))
+    : 0
+  const canDeposit = Boolean(
+    walletAddress &&
+    isCorrectNetwork &&
+    creditVaultConfigured &&
+    !creditVaultPaused &&
+    !depositLoading &&
+    !depositQuoteLoading &&
+    creditRate !== null &&
+    parsedDepositAmount > 0 &&
+    estimatedDepositCredits > 0
+  )
   const verifiedContractUrl = `https://sepolia.mantlescan.xyz/address/${TRADE_SIGNAL_REGISTRY_ADDRESS}#code`
   const reasoningPhase = aiLoading ? 'processing' : aiError ? 'error' : aiResult ? 'complete' : 'idle'
   const getReasoningState = (index: number) => {
@@ -814,7 +860,11 @@ function App() {
               <div className="font-mono text-[10px] text-cyan-300">cost per analysis: {creditsRequired} credits</div>
             </div>
             <button
-              onClick={depositCredits}
+              onClick={() => {
+                setCreditsError(null)
+                setDepositModalOpen(true)
+                loadDepositQuote()
+              }}
               disabled={depositLoading || !walletAddress || !isCorrectNetwork || !creditVaultConfigured || creditVaultPaused}
               className="command-button px-3 py-2 text-[10px] font-bold uppercase tracking-wider disabled:opacity-50"
             >
@@ -830,6 +880,71 @@ function App() {
           )}
         </div>
       </header>
+
+      {depositModalOpen && (
+        <div className="deposit-modal-backdrop" onMouseDown={() => !depositLoading && setDepositModalOpen(false)}>
+          <div className="deposit-modal" role="dialog" aria-modal="true" aria-labelledby="deposit-modal-title" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <div className="font-mono text-[10px] uppercase tracking-[0.22em] text-cyan-300">Mantle Sepolia testnet</div>
+                <h2 id="deposit-modal-title" className="mt-2 text-lg font-semibold text-white">Get AI analysis credits</h2>
+                <p className="mt-1 text-xs leading-5 text-slate-400">Deposit test MNT into the credit vault. No real funds.</p>
+              </div>
+              <button onClick={() => setDepositModalOpen(false)} disabled={depositLoading} className="deposit-modal-close" aria-label="Close deposit dialog">X</button>
+            </div>
+
+            <label className="mt-5 block">
+              <span className="font-mono text-[10px] uppercase tracking-wider text-slate-400">Deposit amount</span>
+              <div className="deposit-input-wrap mt-2">
+                <input
+                  value={depositAmountMnt}
+                  onChange={(event) => setDepositAmountMnt(event.target.value)}
+                  inputMode="decimal"
+                  type="text"
+                  autoFocus
+                  className="deposit-input"
+                  placeholder="0.0"
+                />
+                <span>MNT</span>
+              </div>
+            </label>
+
+            <div className="mt-3 grid grid-cols-4 gap-2">
+              {['0.01', '0.05', '0.1', '0.5'].map((amount) => (
+                <button key={amount} onClick={() => setDepositAmountMnt(amount)} className={`deposit-preset ${depositAmountMnt === amount ? 'active' : ''}`}>
+                  {amount}
+                </button>
+              ))}
+            </div>
+
+            <div className="deposit-quote mt-5">
+              <div>
+                <span>On-chain rate</span>
+                <strong>{depositQuoteLoading ? 'Loading...' : creditRate !== null ? `1 MNT = ${creditRate.toLocaleString()} credits` : 'Rate unavailable'}</strong>
+              </div>
+              <div>
+                <span>You receive</span>
+                <strong className="text-cyan-200">{depositQuoteLoading || creditRate === null ? '-' : `${estimatedDepositCredits.toLocaleString()} credits`}</strong>
+              </div>
+              <div>
+                <span>Analyses available</span>
+                <strong>{depositQuoteLoading || creditRate === null || creditsRequired <= 0 ? '-' : Math.floor(estimatedDepositCredits / creditsRequired).toLocaleString()}</strong>
+              </div>
+            </div>
+
+            {!depositQuoteLoading && creditRate !== null && estimatedDepositCredits === 0 && parsedDepositAmount > 0 && (
+              <div className="mt-3 rounded-lg border border-amber-300/25 bg-amber-400/10 p-3 text-xs text-amber-100">
+                Deposit is too small to mint one credit at the current on-chain rate.
+              </div>
+            )}
+            {creditsError && <div className="alert-card mt-3 p-3 text-xs text-red-200">{creditsError}</div>}
+
+            <button onClick={depositCredits} disabled={!canDeposit} className="command-button mt-5 w-full px-4 py-3 text-xs font-bold disabled:opacity-50">
+              {depositLoading ? 'Waiting for confirmation...' : `Deposit ${normalizedDepositAmount || '0'} MNT`}
+            </button>
+          </div>
+        </div>
+      )}
 
       <main className="relative z-10 mx-auto max-w-[1500px] space-y-6 px-4 py-6 lg:px-8">
         <section className="grid gap-6 xl:grid-cols-[0.95fr_1.45fr]">

@@ -318,6 +318,107 @@ button {
   background: linear-gradient(90deg, rgba(124, 92, 255, .16), rgba(34, 211, 238, .13));
 }
 
+.deposit-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(1, 5, 18, .74);
+  backdrop-filter: blur(10px);
+  animation: modal-fade-in 160ms ease-out;
+}
+
+.deposit-modal {
+  width: min(100%, 420px);
+  border: 1px solid rgba(34, 211, 238, .45);
+  border-radius: 8px;
+  padding: 20px;
+  background:
+    linear-gradient(145deg, rgba(20, 31, 60, .98), rgba(5, 14, 32, .98)),
+    rgba(5, 14, 32, .98);
+  box-shadow: 0 28px 100px rgba(0, 0, 0, .64), 0 0 42px rgba(34, 211, 238, .12);
+  animation: modal-rise-in 180ms ease-out;
+}
+
+.deposit-modal-close {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  place-items: center;
+  border: 1px solid rgba(148, 163, 184, .22);
+  border-radius: 8px;
+  background: rgba(15, 23, 42, .72);
+  color: #cbd5e1;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.deposit-input-wrap {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid rgba(34, 211, 238, .34);
+  border-radius: 8px;
+  padding: 11px 12px;
+  background: rgba(2, 8, 23, .72);
+  color: #67e8f9;
+  font: 700 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.deposit-input {
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: white;
+  font: 700 22px ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.deposit-preset {
+  min-height: 36px;
+  border: 1px solid rgba(148, 163, 184, .2);
+  border-radius: 8px;
+  background: rgba(15, 23, 42, .72);
+  color: #cbd5e1;
+  font: 700 11px ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.deposit-preset:hover,
+.deposit-preset.active {
+  border-color: rgba(34, 211, 238, .56);
+  background: rgba(34, 211, 238, .12);
+  color: #cffafe;
+}
+
+.deposit-quote {
+  display: grid;
+  gap: 10px;
+  border-top: 1px solid rgba(148, 163, 184, .16);
+  border-bottom: 1px solid rgba(148, 163, 184, .16);
+  padding-block: 14px;
+}
+
+.deposit-quote > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.deposit-quote span {
+  color: #94a3b8;
+  font-size: 12px;
+}
+
+.deposit-quote strong {
+  color: #f8fafc;
+  font: 700 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
 .pulse-dot { display: inline-block; width: 7px; height: 7px; border-radius: 999px; background: #34d399; box-shadow: 0 0 14px #34d399; }
 .grid-bg { background-image: linear-gradient(var(--grid-line) 1px, transparent 1px), linear-gradient(90deg, var(--grid-line) 1px, transparent 1px); background-size: 42px 42px; }
 
@@ -468,6 +569,8 @@ button {
 @keyframes particle-spin { from { rotate: 0deg; translate: 0 -52px; opacity: .45; } 50% { opacity: 1; } to { rotate: 360deg; translate: 0 -52px; opacity: .45; } }
 @keyframes reason-pulse { 0%, 100% { transform: scale(1); box-shadow: 0 0 16px currentColor; } 50% { transform: scale(1.45); box-shadow: 0 0 26px currentColor; } }
 @keyframes reason-scan { from { translate: -100% 0; } to { translate: 100% 0; } }
+@keyframes modal-fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes modal-rise-in { from { opacity: 0; transform: translateY(8px) scale(.98); } to { opacity: 1; transform: translateY(0) scale(1); } }
 
 @media (max-width: 900px) {
   .history-row { grid-template-columns: 1fr 1fr; }
