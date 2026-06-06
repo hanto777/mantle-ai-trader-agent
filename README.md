@@ -73,14 +73,26 @@ npm install && npm run build
 
 ## Business Model
 
-This branch adds a testnet-only demo credit system for protecting Gemini analysis from unlimited free usage.
+Mantle AI Trader uses prepaid AI credits to turn expensive, decision-ready market intelligence into an on-chain product.
 
 - Users deposit Mantle Sepolia test MNT into `AnalysisCreditVault`.
 - The vault converts test MNT deposits into AI analysis credits.
-- The frontend can display a connected wallet's credit balance and start a test deposit flow.
-- The backend exposes `GET /api/billing/status` for billing policy and contract metadata.
-- `POST /api/ai/analyze` requires a wallet signature and enough AI credits.
+- Each fresh analysis requires a wallet signature and costs an explicit number of credits.
 - After a successful Gemini response, the backend calls `consumeCredit` on `AnalysisCreditVault`.
+- Read-only DEX route comparison remains available as the execution-intelligence layer after analysis.
+
+### Why users buy credits
+
+A credit does not pay for a generic chatbot answer. It pays for a decision package that combines:
+
+- Live market candles and multi-timeframe `1H / 1D` context.
+- RSI, MACD, Stochastic, volume, support, and resistance analysis.
+- An explainable `BUY` or `HOLD` decision with confidence and reasoning.
+- Real Mantle mainnet quote comparison across OpenOcean, Merchant Moe, Agni, and Uniswap V3.
+- A selected route, slippage configuration, minimum-received preview, and safety warnings.
+- The option to record the resulting signal on-chain as a public receipt.
+
+The user saves the time and complexity of separately reading charts, comparing indicators, checking DEX liquidity, and calculating execution risk. Future credit tiers can monetize deeper scans, portfolio analysis, recurring agent monitoring, and premium strategy access.
 
 Demo Mantle Sepolia vault:
 
@@ -138,12 +150,16 @@ Each `Analyze Now` request costs `1` demo AI credit across all supported pairs. 
 ### Phase 1: MVP terminal
 
 - Live spot candles
-- Gemini BUY/HOLD analysis
+- Explainable Gemini BUY/HOLD analysis
+- RSI, MACD, and Stochastic across `1H / 1D`
 - Paper trading agent
 - On-chain signal recording
 - Mantle Sepolia AI credits
 - Credit-gated analysis requests
 - Multi-pair market selector
+- Read-only Mantle DEX route comparison
+- OpenOcean, Merchant Moe, Agni, and Uniswap V3 quotes
+- DEX selection, BUY/SELL setup preview, slippage, and minimum received
 
 ### Phase 2: Verifiable performance
 
@@ -169,6 +185,21 @@ Each `Analyze Now` request costs `1` demo AI credit across all supported pairs. 
 
 ## Hackathon Description
 
-Mantle AI Trader turns AI market analysis into a credit-gated on-chain product. Instead of offering unlimited free Gemini calls, users deposit Mantle Sepolia test MNT into `AnalysisCreditVault` to receive AI credits. They choose a market pair, sign a wallet authorization, spend credits for an AI analysis, and can publish the resulting signal to `TradeSignalRegistry` on Mantle Sepolia.
+Mantle AI Trader is a hybrid AI trading terminal and Mantle DEX intelligence aggregator. It helps a user answer two questions in one workflow: **should I trade this market, and where can I get the best execution?**
 
-The project demonstrates a practical web3 business model for AI apps: wallet identity, prepaid credits, backend API protection, and public on-chain receipts for generated signals. The current demo uses testnet funds only and is designed as a foundation for verifiable signal performance, trader reputation, and future AI strategy marketplaces.
+The user selects a market, signs a wallet authorization, and spends an on-chain AI credit for an explainable multi-timeframe analysis. Gemini combines chart structure, support and resistance, volume, RSI, MACD, and Stochastic across `1H` and `1D` to return a `BUY` or `HOLD` decision with confidence and readable reasoning.
+
+After the analysis, the terminal compares real read-only Mantle mainnet quotes from OpenOcean, Merchant Moe, Agni, and Uniswap V3. The user can select a DEX route and prepare a BUY or SELL setup with configurable slippage and minimum-received protection. Transaction creation, approvals, signatures, and swaps remain disabled in the current safety-first prototype.
+
+The business model is prepaid decision intelligence. Users buy credits because each analysis replaces several manual tasks: technical analysis, timeframe synthesis, DEX discovery, liquidity comparison, and execution-risk preparation. Credits protect the AI backend from unlimited usage while creating a transparent web3 payment flow tied to wallet identity.
+
+Mantle AI Trader currently demonstrates:
+
+- Mantle Sepolia credit deposits and on-chain credit consumption.
+- Wallet-authenticated, credit-gated Gemini analysis.
+- Explainable `1H / 1D` indicator reasoning.
+- Read-only Mantle mainnet DEX aggregation and direct contract quotes.
+- On-chain signal receipts through `TradeSignalRegistry`.
+- A foundation for future user-confirmed swaps, verifiable strategy performance, recurring AI agents, and a strategy marketplace.
+
+The prototype uses testnet funds for billing and never executes a real trade.
