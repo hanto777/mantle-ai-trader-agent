@@ -106,6 +106,7 @@ class AIResponseModel(BaseModel):
     resistance_price: float = Field(..., gt=0)
     confidence: float = Field(..., ge=0.0, le=1.0)
     reason: str
+    indicators: Optional[dict] = None
 
 
 class AnalyzeRequest(BaseModel):
@@ -420,6 +421,60 @@ async def fetch_candles(symbol: str, timeframe: str = "1h", limit: int = 102) ->
             )
 
 
+def calculate_indicators(ohlcv: list) -> dict:
+    if len(ohlcv) < 35:
+        raise ValueError("At least 35 closed candles are required for indicators")
+
+    frame = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
+    close = frame["close"].astype(float)
+    high = frame["high"].astype(float)
+    low = frame["low"].astype(float)
+
+    delta = close.diff()
+    gain = delta.clip(lower=0).ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
+    loss = (-delta.clip(upper=0)).ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
+    rs = gain / loss.replace(0, float("nan"))
+    rsi = 100 - (100 / (1 + rs))
+
+    macd_line = close.ewm(span=12, adjust=False).mean() - close.ewm(span=26, adjust=False).mean()
+    macd_signal = macd_line.ewm(span=9, adjust=False).mean()
+    macd_histogram = macd_line - macd_signal
+
+    lowest_low = low.rolling(window=14).min()
+    highest_high = high.rolling(window=14).max()
+    stochastic_k = 100 * (close - lowest_low) / (highest_high - lowest_low).replace(0, float("nan"))
+    stochastic_d = stochastic_k.rolling(window=3).mean()
+
+    def latest_number(series, default: float) -> float:
+        value = series.iloc[-1]
+        return default if pd.isna(value) else float(value)
+
+    rsi_value = latest_number(rsi, 50.0)
+    macd_value = latest_number(macd_line, 0.0)
+    signal_value = latest_number(macd_signal, 0.0)
+    histogram_value = latest_number(macd_histogram, 0.0)
+    stochastic_k_value = latest_number(stochastic_k, 50.0)
+    stochastic_d_value = latest_number(stochastic_d, 50.0)
+
+    return {
+        "rsi": round(rsi_value, 2),
+        "rsi_state": "oversold" if rsi_value < 30 else "overbought" if rsi_value > 70 else "neutral",
+        "macd": round(macd_value, 8),
+        "macd_signal": round(signal_value, 8),
+        "macd_histogram": round(histogram_value, 8),
+        "macd_state": "bullish" if macd_value > signal_value else "bearish",
+        "stochastic_k": round(stochastic_k_value, 2),
+        "stochastic_d": round(stochastic_d_value, 2),
+        "stochastic_state": (
+            "oversold"
+            if stochastic_k_value < 20 and stochastic_d_value < 20
+            else "overbought"
+            if stochastic_k_value > 80 and stochastic_d_value > 80
+            else "neutral"
+        ),
+    }
+
+
 async def get_gemini_analysis(symbol: str, timeframe: str = "1h") -> dict:
     """Fetch Gemini analysis for the symbol."""
     api_key = os.getenv("GEMINI_API_KEY")
@@ -428,10 +483,19 @@ async def get_gemini_analysis(symbol: str, timeframe: str = "1h") -> dict:
     if not api_key:
         raise HTTPException(status_code=400, detail="GEMINI_API_KEY not configured")
 
-    # Fetch last 100 candles
-    ohlcv, _ = await fetch_candles(symbol, timeframe, 101)
-    if len(ohlcv) < 100:
-        raise HTTPException(status_code=502, detail="Insufficient closed candles for analysis")
+    hourly_result, daily_result = await asyncio.gather(
+        fetch_candles(symbol, "1h", 121),
+        fetch_candles(symbol, "1d", 121),
+    )
+    ohlcv, _ = hourly_result
+    daily_ohlcv, _ = daily_result
+    if len(ohlcv) < 100 or len(daily_ohlcv) < 100:
+        raise HTTPException(status_code=502, detail="Insufficient closed 1H or 1D candles for analysis")
+
+    indicators = {
+        "1h": calculate_indicators(ohlcv),
+        "1d": calculate_indicators(daily_ohlcv),
+    }
 
     last100 = ohlcv[-100:]
     df = pd.DataFrame(last100, columns=["timestamp", "open", "high", "low", "close", "volume"])
@@ -458,10 +522,18 @@ async def get_gemini_analysis(symbol: str, timeframe: str = "1h") -> dict:
 
     image_part = types.Part.from_bytes(data=image_bytes, mime_type="image/png")
     prompt = (
-        f"Analyze ONLY spot LONG scenario for {symbol}. Respond strictly with JSON only (no markdown). \n"
+        f"Analyze ONLY spot LONG scenario for {symbol}. Respond strictly with JSON only (no markdown).\n"
+        "Use the chart together with the exact multi-timeframe indicators below. "
+        "The 1D timeframe defines the broader trend; the 1H timeframe helps time an entry. "
+        "Explicitly consider whether RSI and Stochastic are overbought/oversold and whether MACD is bullish/bearish. "
+        "If 1H and 1D conflict, reduce confidence and prefer HOLD unless the long setup is clearly justified.\n"
+        f"Indicators: {json.dumps(indicators, separators=(',', ':'))}\n"
         "Return exactly the following schema:\n"
         "{\n  \"action\": \"BUY\" | \"HOLD\",\n  \"support_price\": number,\n  \"resistance_price\": number,\n  \"confidence\": number,\n  \"reason\": string\n}\n"
-        "Provide numeric prices in the quote currency. Give concise reasoning. "
+        "The reason must clearly explain how the 1D trend, 1H setup, RSI, MACD, Stochastic, "
+        "support/resistance, and volume contributed to the final decision. "
+        "Mention conflicts between indicators when present. Keep the explanation readable in 3-5 sentences. "
+        "Provide numeric prices in the quote currency. "
         "IMPORTANT: confidence must be a decimal number from 0.0 to 1.0 (for example 0.60), NOT 60."
     )
 
@@ -502,7 +574,9 @@ async def get_gemini_analysis(symbol: str, timeframe: str = "1h") -> dict:
 
         parsed = normalize_gemini_response(parsed)
         ai = AIResponseModel.parse_obj(parsed)
-        return ai.dict()
+        result = ai.dict()
+        result["indicators"] = indicators
+        return result
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Failed to parse Gemini response: {exc}")
 

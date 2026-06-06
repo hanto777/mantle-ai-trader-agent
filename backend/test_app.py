@@ -86,6 +86,33 @@ class TestConfidenceNormalization(unittest.TestCase):
             app.normalize_gemini_response(response)
 
 
+class TestTechnicalIndicators(unittest.TestCase):
+    @staticmethod
+    def make_candles(close_values):
+        return [
+            [index * 3_600_000, close - 0.2, close + 0.5, close - 0.5, close, 1000 + index]
+            for index, close in enumerate(close_values)
+        ]
+
+    def test_calculate_indicators_returns_multi_signal_values(self):
+        closes = [100 + ((index % 12) - 6) * 0.4 + index * 0.02 for index in range(120)]
+        result = app.calculate_indicators(self.make_candles(closes))
+
+        self.assertIn(result["rsi_state"], {"oversold", "neutral", "overbought"})
+        self.assertIn(result["macd_state"], {"bullish", "bearish"})
+        self.assertIn(result["stochastic_state"], {"oversold", "neutral", "overbought"})
+        self.assertIsInstance(result["stochastic_k"], float)
+        self.assertIsInstance(result["stochastic_d"], float)
+
+    def test_calculate_indicators_handles_flat_market(self):
+        result = app.calculate_indicators(self.make_candles([100.0] * 120))
+
+        self.assertEqual(result["rsi"], 50.0)
+        self.assertEqual(result["stochastic_k"], 50.0)
+        self.assertEqual(result["stochastic_d"], 50.0)
+        self.assertEqual(result["stochastic_state"], "neutral")
+
+
 class TestPaperTrading(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self._original_account = app.account
