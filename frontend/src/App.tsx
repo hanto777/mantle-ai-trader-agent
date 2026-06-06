@@ -192,6 +192,9 @@ function App() {
   const [dexQuotes, setDexQuotes] = useState<DexQuoteResponse | null>(null)
   const [dexQuotesLoading, setDexQuotesLoading] = useState(false)
   const [dexQuotesError, setDexQuotesError] = useState<string | null>(null)
+  const [selectedDexProvider, setSelectedDexProvider] = useState<string | null>(null)
+  const [tradeSide, setTradeSide] = useState<'BUY' | 'SELL'>('BUY')
+  const [slippagePercent, setSlippagePercent] = useState('0.5')
 
   const creditVaultConfigured = Boolean(ANALYSIS_CREDIT_VAULT_ADDRESS)
   const creditsRequired = billingStatus?.credit_required_for_analysis ?? ANALYSIS_CREDIT_REQUIRED
@@ -837,6 +840,7 @@ function App() {
   useEffect(() => {
     setDexQuotes(null)
     setDexQuotesError(null)
+    setSelectedDexProvider(null)
   }, [selectedSymbol])
 
   useEffect(() => {
@@ -846,6 +850,16 @@ function App() {
     // Quote preview follows a new BUY decision; amount changes remain manual.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [aiResult])
+
+  useEffect(() => {
+    if (!dexQuotes) return
+    const selectedStillAvailable = dexQuotes.quotes.some(
+      (quote) => quote.provider === selectedDexProvider && quote.status === 'available'
+    )
+    if (!selectedStillAvailable) {
+      setSelectedDexProvider(dexQuotes.best_provider)
+    }
+  }, [dexQuotes, selectedDexProvider])
 
   const confidencePercent = aiResult ? Math.round(aiResult.confidence * 100) : 0
   const supportLevel = aiResult?.support_price ?? null
@@ -859,6 +873,13 @@ function App() {
   const latestHigh = candles.length ? Math.max(...candles.slice(-24).map((c) => c.high)) : null
   const latestLow = candles.length ? Math.min(...candles.slice(-24).map((c) => c.low)) : null
   const canAnalyze = Boolean(walletAddress && isCorrectNetwork && (credits ?? 0) >= creditsRequired && !aiLoading)
+  const selectedDexQuote = dexQuotes?.quotes.find(
+    (quote) => quote.provider === selectedDexProvider && quote.status === 'available'
+  ) ?? null
+  const parsedSlippage = Number(slippagePercent.replace(',', '.'))
+  const minimumReceived = selectedDexQuote?.amount_out && Number.isFinite(parsedSlippage)
+    ? selectedDexQuote.amount_out * (1 - Math.max(0, parsedSlippage) / 100)
+    : null
   const normalizedDepositAmount = depositAmountMnt.replace(',', '.').trim()
   const parsedDepositAmount = Number(normalizedDepositAmount)
   const estimatedDepositCredits = Number.isFinite(parsedDepositAmount) && parsedDepositAmount > 0
@@ -1097,7 +1118,13 @@ function App() {
                   { provider: 'Agni', kind: 'direct', status: 'ready', note: 'Live direct quoter ready' },
                   { provider: 'Uniswap V3', kind: 'direct', status: 'ready', note: 'Live QuoterV2 ready' },
                 ] as DexQuote[]).map((quote) => (
-                  <div key={quote.provider} className={`dex-route-row ${dexQuotes?.best_provider === quote.provider ? 'best' : ''}`}>
+                  <button
+                    key={quote.provider}
+                    type="button"
+                    onClick={() => quote.status === 'available' && setSelectedDexProvider(quote.provider)}
+                    disabled={quote.status !== 'available'}
+                    className={`dex-route-row ${dexQuotes?.best_provider === quote.provider ? 'best' : ''} ${selectedDexProvider === quote.provider ? 'selected' : ''}`}
+                  >
                     <div>
                       <div className="flex items-center gap-2">
                         <strong>{quote.provider}</strong>
@@ -1116,13 +1143,73 @@ function App() {
                           : quote.kind}
                       </span>
                     </div>
-                  </div>
+                  </button>
                 ))}
               </div>
 
               {dexQuotesError && <div className="mt-3 font-mono text-[10px] text-red-300">{dexQuotesError}</div>}
               <div className="dex-safety-line">
                 <span>No approval</span><span>No calldata</span><span>No signature</span><span>No transaction</span>
+              </div>
+            </div>
+
+            <div className="trade-setup mt-3">
+              <div className="trade-setup-head">
+                <div>
+                  <div className="font-mono text-xs uppercase tracking-[0.2em] text-cyan-300">Trade setup</div>
+                  <h3 className="mt-1 text-base font-semibold text-white">{selectedDexQuote?.provider || 'Select a DEX route'}</h3>
+                </div>
+                <span className="mini-badge amber">Preview only</span>
+              </div>
+
+              <div className="trade-side-grid mt-4">
+                <button type="button" onClick={() => setTradeSide('BUY')} className={`trade-side-button buy ${tradeSide === 'BUY' ? 'active' : ''}`}>
+                  BUY
+                  <span>USDT to MNT</span>
+                </button>
+                <button type="button" onClick={() => setTradeSide('SELL')} className={`trade-side-button sell ${tradeSide === 'SELL' ? 'active' : ''}`}>
+                  SELL
+                  <span>MNT to USDT</span>
+                </button>
+              </div>
+
+              <div className="slippage-panel mt-4">
+                <div className="mb-2 flex items-center justify-between">
+                  <label htmlFor="slippage-input">Slippage (%)</label>
+                  <span>{tradeSide} setup</span>
+                </div>
+                <div className="slippage-controls">
+                  <input
+                    id="slippage-input"
+                    value={slippagePercent}
+                    onChange={(event) => setSlippagePercent(event.target.value)}
+                    inputMode="decimal"
+                  />
+                  {[0.02, 0.1, 0.5, 1].map((value) => (
+                    <button
+                      key={value}
+                      type="button"
+                      onClick={() => setSlippagePercent(String(value))}
+                      className={Number(slippagePercent) === value ? 'active' : ''}
+                    >
+                      {value}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="trade-preview-grid mt-4">
+                <div><span>Selected DEX</span><strong>{selectedDexQuote?.provider || '-'}</strong></div>
+                <div><span>Quoted output</span><strong>{tradeSide === 'BUY' && selectedDexQuote?.amount_out ? `${selectedDexQuote.amount_out.toFixed(4)} MNT` : 'Reverse quote pending'}</strong></div>
+                <div><span>Minimum received</span><strong>{tradeSide === 'BUY' && minimumReceived ? `${minimumReceived.toFixed(4)} MNT` : '-'}</strong></div>
+                <div><span>Execution</span><strong>Locked</strong></div>
+              </div>
+
+              <div className="mt-4 rounded-lg border border-amber-300/20 bg-amber-300/5 p-3 font-mono text-[10px] leading-5 text-amber-100/80">
+                {tradeSide === 'BUY'
+                  ? `BUY preview prepared on ${selectedDexQuote?.provider || 'no selected DEX'}.`
+                  : `SELL selected on ${selectedDexQuote?.provider || 'no selected DEX'}; reverse quotes are not connected yet.`}
+                {' '}Real approvals, signatures, and swaps remain disabled.
               </div>
             </div>
           </div>

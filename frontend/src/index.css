@@ -739,6 +739,9 @@ button {
 }
 
 .dex-route-row {
+  width: 100%;
+  color: inherit;
+  text-align: left;
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(104px, auto);
   align-items: center;
@@ -747,6 +750,16 @@ button {
   border-radius: 8px;
   padding: 11px 12px;
   background: rgba(2, 8, 23, .48);
+  transition: border-color 160ms ease, background 160ms ease, transform 160ms ease;
+}
+
+.dex-route-row:not(:disabled):hover {
+  transform: translateY(-1px);
+  border-color: rgba(103, 232, 249, .42);
+}
+
+.dex-route-row:disabled {
+  cursor: not-allowed;
 }
 
 .dex-route-row > div {
@@ -765,6 +778,11 @@ button {
 .dex-route-row.best {
   border-color: rgba(52, 211, 153, .45);
   background: linear-gradient(90deg, rgba(52, 211, 153, .1), rgba(34, 211, 238, .05));
+}
+
+.dex-route-row.selected {
+  border-color: rgba(34, 211, 238, .72);
+  box-shadow: inset 3px 0 0 rgba(34, 211, 238, .82), 0 0 24px rgba(34, 211, 238, .08);
 }
 
 .dex-route-row strong,
@@ -797,6 +815,117 @@ button {
   text-transform: uppercase;
   letter-spacing: .08em;
 }
+
+.trade-setup {
+  border: 1px solid rgba(139, 92, 246, .34);
+  border-radius: 8px;
+  padding: 16px;
+  background: linear-gradient(145deg, rgba(18, 16, 48, .9), rgba(2, 12, 28, .9));
+  box-shadow: inset 0 0 36px rgba(139, 92, 246, .05);
+}
+
+.trade-setup-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.trade-side-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.trade-side-button {
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 13px 12px;
+  color: #fff;
+  font: 800 15px ui-monospace, SFMono-Regular, Menlo, monospace;
+  opacity: .55;
+  transition: opacity 160ms ease, transform 160ms ease, box-shadow 160ms ease;
+}
+
+.trade-side-button span {
+  display: block;
+  margin-top: 4px;
+  font-size: 9px;
+  opacity: .72;
+}
+
+.trade-side-button.buy { border-color: rgba(52, 211, 153, .5); background: linear-gradient(135deg, rgba(5, 150, 105, .82), rgba(16, 185, 129, .46)); }
+.trade-side-button.sell { border-color: rgba(248, 113, 113, .5); background: linear-gradient(135deg, rgba(185, 28, 28, .82), rgba(239, 68, 68, .46)); }
+.trade-side-button.active { opacity: 1; transform: translateY(-1px); box-shadow: 0 10px 28px rgba(0, 0, 0, .24); }
+
+.slippage-panel label,
+.slippage-panel span {
+  color: #cbd5e1;
+  font: 700 11px ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.slippage-panel span {
+  color: #64748b;
+  text-transform: uppercase;
+}
+
+.slippage-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) repeat(4, auto);
+  gap: 8px;
+}
+
+.slippage-controls input,
+.slippage-controls button {
+  min-width: 0;
+  border: 1px solid rgba(148, 163, 184, .18);
+  border-radius: 8px;
+  background: rgba(2, 8, 23, .68);
+  color: #f8fafc;
+  font: 700 13px ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.slippage-controls input {
+  padding: 10px 12px;
+  outline: 0;
+}
+
+.slippage-controls button {
+  min-width: 44px;
+  padding: 10px;
+}
+
+.slippage-controls button.active {
+  border-color: rgba(103, 232, 249, .72);
+  background: rgba(37, 99, 235, .72);
+  box-shadow: 0 0 0 2px rgba(103, 232, 249, .16);
+}
+
+.trade-preview-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.trade-preview-grid > div {
+  min-width: 0;
+  border: 1px solid rgba(71, 85, 105, .4);
+  border-radius: 8px;
+  padding: 10px;
+  background: rgba(2, 8, 23, .46);
+}
+
+.trade-preview-grid span,
+.trade-preview-grid strong {
+  display: block;
+  overflow: hidden;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trade-preview-grid span { color: #64748b; font-size: 9px; text-transform: uppercase; }
+.trade-preview-grid strong { margin-top: 5px; color: #f8fafc; font-size: 11px; }
 
 @keyframes orbit { from { rotate: 0deg; } to { rotate: 360deg; } }
 @keyframes core-pulse { 0%, 100% { transform: scale(1); box-shadow: 0 0 44px rgba(34, 211, 238, .8); } 50% { transform: scale(1.28); box-shadow: 0 0 70px rgba(34, 211, 238, 1); } }
