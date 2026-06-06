@@ -1,6 +1,7 @@
 import unittest
 
 import app.main as app
+from app.dex_quotes import get_read_only_quotes
 
 
 class TestConfidenceNormalization(unittest.TestCase):
@@ -177,6 +178,67 @@ class TestPaperTrading(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(app.account.trades_history), 1)
         self.assertEqual(result["close_reason"], "take_profit")
         self.assertGreater(result["pnl_usdt"], 0)
+
+
+class TestDexQuotePreview(unittest.TestCase):
+    def test_quote_snapshot_is_read_only(self):
+        def fake_openocean(amount_in):
+            return {
+                "provider": "OpenOcean",
+                "kind": "aggregator",
+                "status": "available",
+                "amount_in": amount_in,
+                "amount_out": 201.5,
+                "rate": 2.015,
+                "route": "Merchant Moe",
+                "estimated_gas": 123456,
+                "price_impact_percent": "0.05",
+                "note": "test quote",
+            }
+
+        def fake_direct(provider, amount_out):
+            return lambda amount_in: {
+                "provider": provider,
+                "kind": "direct",
+                "status": "available",
+                "amount_in": amount_in,
+                "amount_out": amount_out,
+                "rate": amount_out / amount_in,
+                "route": "USDT -> WMNT",
+                "note": "test quote",
+            }
+
+        fetchers = (
+            ("OpenOcean", "aggregator", fake_openocean),
+            ("Merchant Moe", "direct", fake_direct("Merchant Moe", 201.0)),
+            ("Agni", "direct", fake_direct("Agni", 199.0)),
+            ("Uniswap V3", "direct", fake_direct("Uniswap V3", 180.0)),
+        )
+        result = get_read_only_quotes("MNT/USDT", 100, provider_fetchers=fetchers)
+
+        self.assertEqual(result["best_provider"], "OpenOcean")
+        self.assertFalse(result["execution_enabled"])
+        self.assertEqual(len(result["quotes"]), 4)
+        self.assertNotIn("calldata", result)
+        self.assertEqual(result["quotes"][0]["difference_from_best_percent"], 0)
+        self.assertLess(result["quotes"][3]["difference_from_best_percent"], 0)
+
+    def test_quote_snapshot_keeps_failed_provider(self):
+        def failed(_amount_in):
+            raise ValueError("no liquidity")
+
+        result = get_read_only_quotes(
+            "MNT/USDT",
+            100,
+            provider_fetchers=(("Merchant Moe", "direct", failed),),
+        )
+
+        self.assertIsNone(result["best_provider"])
+        self.assertEqual(result["quotes"][0]["status"], "unavailable")
+
+    def test_quote_snapshot_rejects_unsupported_symbol(self):
+        with self.assertRaises(ValueError):
+            get_read_only_quotes("BTC/USDT", 100)
 
 if __name__ == "__main__":
     unittest.main()

@@ -18,6 +18,7 @@ import pandas as pd
 import mplfinance as mpf
 
 from pydantic import BaseModel, Field
+from .dex_quotes import get_read_only_quotes
 
 try:
     from eth_account import Account
@@ -801,6 +802,18 @@ async def billing_status():
             "credits. Credits are consumed on-chain after a successful Gemini response."
         ),
     }
+
+
+@app.get("/api/dex/quotes")
+async def dex_quotes(
+    symbol: str = Query(default="MNT/USDT"),
+    amount_in: float = Query(default=100.0, gt=0, le=10_000),
+):
+    symbol = normalize_symbol(symbol)
+    try:
+        return await run_in_threadpool(get_read_only_quotes, symbol, amount_in)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @app.post("/api/ai/analyze")

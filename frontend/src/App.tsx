@@ -120,6 +120,32 @@ type BillingStatus = {
   note: string
 }
 
+type DexQuote = {
+  provider: string
+  kind: 'aggregator' | 'direct'
+  status: 'available' | 'unavailable' | 'ready'
+  amount_in?: number
+  amount_out?: number
+  rate?: number
+  route?: string
+  estimated_gas?: number | string | null
+  price_impact_percent?: number | string | null
+  difference_from_best_percent?: number
+  note: string
+}
+
+type DexQuoteResponse = {
+  mode: 'read_only'
+  network: string
+  chain_id: number
+  symbol: string
+  best_provider: string | null
+  quotes: DexQuote[]
+  quoted_at: string
+  execution_enabled: false
+  warning: string
+}
+
 function formatCurrency(value: number) {
   return `$${value.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',')}`
 }
@@ -161,6 +187,10 @@ function App() {
   const [depositAmountMnt, setDepositAmountMnt] = useState('1')
   const [showAllSignals, setShowAllSignals] = useState(false)
   const [reasoningStepIndex, setReasoningStepIndex] = useState(0)
+  const [dexQuoteAmount, setDexQuoteAmount] = useState('100')
+  const [dexQuotes, setDexQuotes] = useState<DexQuoteResponse | null>(null)
+  const [dexQuotesLoading, setDexQuotesLoading] = useState(false)
+  const [dexQuotesError, setDexQuotesError] = useState<string | null>(null)
 
   const creditVaultConfigured = Boolean(ANALYSIS_CREDIT_VAULT_ADDRESS)
   const creditsRequired = billingStatus?.credit_required_for_analysis ?? ANALYSIS_CREDIT_REQUIRED
@@ -297,7 +327,7 @@ function App() {
   useEffect(() => {
     if (!chartContainerRef.current) return
 
-    const chartHeight = chartContainerRef.current.clientHeight || 520
+    const chartHeight = chartContainerRef.current.clientHeight || 280
     const chart = createChart(chartContainerRef.current, {
       width: chartContainerRef.current.clientWidth,
       height: chartHeight,
@@ -434,6 +464,45 @@ function App() {
     }
 
     return message
+  }
+
+  const fetchDexQuotes = async () => {
+    const amount = Number(dexQuoteAmount.replace(',', '.'))
+    if (selectedSymbol !== 'MNT/USDT') {
+      setDexQuotes(null)
+      setDexQuotesError('Read-only DEX preview currently supports MNT/USDT only.')
+      return
+    }
+    if (!Number.isFinite(amount) || amount <= 0 || amount > 10000) {
+      setDexQuotesError('Enter a quote amount between 0 and 10,000 USDT.')
+      return
+    }
+
+    setDexQuotesLoading(true)
+    setDexQuotesError(null)
+    try {
+      const response = await fetch(`${apiBase}/api/dex/quotes?symbol=MNT%2FUSDT&amount_in=${encodeURIComponent(amount)}`)
+      if (!response.ok) {
+        const text = await response.text()
+        if (response.status === 404) {
+          throw new Error('DEX quote API is not deployed on the configured backend yet.')
+        }
+        let message = text || 'Failed to fetch DEX quotes'
+        try {
+          const parsed = JSON.parse(text)
+          message = parsed?.detail || parsed?.message || message
+        } catch {
+          // Plain text API errors are valid fallback messages.
+        }
+        throw new Error(message)
+      }
+      setDexQuotes(await response.json() as DexQuoteResponse)
+    } catch (err: any) {
+      setDexQuotes(null)
+      setDexQuotesError(err?.message || 'Failed to fetch DEX quotes')
+    } finally {
+      setDexQuotesLoading(false)
+    }
   }
 
   const analyzeNow = async () => {
@@ -764,6 +833,19 @@ function App() {
     return () => window.clearInterval(timer)
   }, [aiLoading])
 
+  useEffect(() => {
+    setDexQuotes(null)
+    setDexQuotesError(null)
+  }, [selectedSymbol])
+
+  useEffect(() => {
+    if (aiResult?.action === 'BUY' && selectedSymbol === 'MNT/USDT') {
+      fetchDexQuotes()
+    }
+    // Quote preview follows a new BUY decision; amount changes remain manual.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [aiResult])
+
   const confidencePercent = aiResult ? Math.round(aiResult.confidence * 100) : 0
   const supportLevel = aiResult?.support_price ?? null
   const resistanceLevel = aiResult?.resistance_price ?? null
@@ -934,9 +1016,9 @@ function App() {
       )}
 
       <main className="relative z-10 mx-auto max-w-[1500px] space-y-6 px-4 py-6 lg:px-8">
-        <section className="grid gap-6 xl:grid-cols-[0.95fr_1.45fr]">
-          <div className="glass-panel p-5">
-            <div className="mb-4 flex items-start justify-between gap-4">
+        <section className="market-workspace grid gap-6 xl:grid-cols-[0.95fr_1.45fr]">
+          <div className="market-left-panel glass-panel p-4">
+            <div className="mb-3 flex items-start justify-between gap-4">
               <div>
                 <div className="flex flex-wrap items-center gap-2">
                   <div className="asset-dot">{selectedMarket.label.slice(0, 1)}</div>
@@ -944,8 +1026,8 @@ function App() {
                   <span className="mini-badge">{marketInfo.exchange}</span>
                   <span className="mini-badge">{marketInfo.timeframe}</span>
                 </div>
-                <div className="mt-3 flex items-baseline gap-3">
-                  <span className="font-mono text-3xl font-semibold text-white">
+                <div className="mt-2 flex items-baseline gap-3">
+                  <span className="font-mono text-2xl font-semibold text-white">
                     {latestPrice ? `$${latestPrice.toFixed(6)}` : 'Loading'}
                   </span>
                   <span className={marketChange >= 0 ? 'text-emerald-300' : 'text-red-300'}>
@@ -963,18 +1045,83 @@ function App() {
             {error ? (
               <div className="alert-card p-5 text-sm text-red-200">Error loading candles: {error}</div>
             ) : (
-              <div className="chart-frame grid-bg relative overflow-hidden p-4">
-                <div ref={chartContainerRef} className="h-[520px] w-full" />
+              <div className="chart-frame compact-chart grid-bg relative overflow-hidden p-3">
+                <div ref={chartContainerRef} className="h-[280px] w-full" />
                 {supportLevel && <div className="chart-tag support">S - ${supportLevel.toFixed(4)}</div>}
                 {resistanceLevel && <div className="chart-tag resistance">R - ${resistanceLevel.toFixed(4)}</div>}
               </div>
             )}
 
-            <div className="mt-4 grid grid-cols-2 gap-3 text-xs sm:grid-cols-4">
+            <div className="market-stat-grid mt-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
               <div className="stat-tile"><span>24h high</span><strong>{latestHigh ? `$${latestHigh.toFixed(4)}` : '-'}</strong></div>
               <div className="stat-tile"><span>24h low</span><strong>{latestLow ? `$${latestLow.toFixed(4)}` : '-'}</strong></div>
               <div className="stat-tile"><span>Volume</span><strong>{Math.round(totalVolume).toLocaleString()}</strong></div>
               <div className="stat-tile"><span>Source</span><strong>{marketInfo.exchange || '-'}</strong></div>
+            </div>
+
+            <div className="dex-terminal mt-3">
+              <div className="dex-terminal-head">
+                <div>
+                  <div className="font-mono text-xs uppercase tracking-[0.2em] text-cyan-300">DEX route terminal</div>
+                  <h3 className="mt-1 text-base font-semibold text-white">Mantle mainnet quote preview</h3>
+                  <div className="mt-1 font-mono text-[10px] uppercase tracking-wide text-slate-400">Bridged legacy USDT to native MNT</div>
+                </div>
+                <span className="mini-badge live">Read only</span>
+              </div>
+
+              <div className="dex-quote-controls">
+                <label>
+                  <span>Spend</span>
+                  <input
+                    value={dexQuoteAmount}
+                    onChange={(event) => setDexQuoteAmount(event.target.value)}
+                    inputMode="decimal"
+                    aria-label="DEX quote amount in USDT"
+                  />
+                  <strong>USDT</strong>
+                </label>
+                <button
+                  onClick={fetchDexQuotes}
+                  disabled={dexQuotesLoading || selectedSymbol !== 'MNT/USDT'}
+                  className="ghost-button px-4 py-3 text-xs font-bold disabled:opacity-50"
+                >
+                  {dexQuotesLoading ? 'Scanning...' : 'Scan routes'}
+                </button>
+              </div>
+
+              <div className="dex-route-list">
+                {(dexQuotes?.quotes ?? [
+                  { provider: 'OpenOcean', kind: 'aggregator', status: 'ready', note: 'Live aggregate quote ready' },
+                  { provider: 'Merchant Moe', kind: 'direct', status: 'ready', note: 'Live LB Quoter ready' },
+                  { provider: 'Agni', kind: 'direct', status: 'ready', note: 'Live direct quoter ready' },
+                  { provider: 'Uniswap V3', kind: 'direct', status: 'ready', note: 'Live QuoterV2 ready' },
+                ] as DexQuote[]).map((quote) => (
+                  <div key={quote.provider} className={`dex-route-row ${dexQuotes?.best_provider === quote.provider ? 'best' : ''}`}>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <strong>{quote.provider}</strong>
+                        {dexQuotes?.best_provider === quote.provider && <span className="dex-best-tag">best</span>}
+                      </div>
+                      <span className="dex-route-path">{quote.route || quote.note}</span>
+                    </div>
+                    <div className="text-right">
+                      <strong>{quote.amount_out ? `${quote.amount_out.toFixed(4)} MNT` : quote.status}</strong>
+                      <span>
+                        {quote.amount_out
+                          ? quote.difference_from_best_percent === 0
+                            ? `${quote.amount_in?.toFixed(2)} USDT in`
+                            : `${quote.difference_from_best_percent?.toFixed(2)}% vs best`
+                          : quote.kind}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {dexQuotesError && <div className="mt-3 font-mono text-[10px] text-red-300">{dexQuotesError}</div>}
+              <div className="dex-safety-line">
+                <span>No approval</span><span>No calldata</span><span>No signature</span><span>No transaction</span>
+              </div>
             </div>
           </div>
 
