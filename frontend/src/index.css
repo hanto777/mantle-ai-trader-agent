@@ -695,7 +695,6 @@ button {
 
 .dex-terminal-head,
 .dex-quote-controls,
-.dex-route-row,
 .dex-safety-line {
   display: flex;
   align-items: center;
@@ -740,6 +739,10 @@ button {
 }
 
 .dex-route-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(104px, auto);
+  align-items: center;
+  gap: 12px;
   border: 1px solid rgba(71, 85, 105, .44);
   border-radius: 8px;
   padding: 11px 12px;
@@ -748,6 +751,15 @@ button {
 
 .dex-route-row > div {
   min-width: 0;
+}
+
+.dex-route-amount {
+  min-width: 104px !important;
+}
+
+.dex-route-amount strong,
+.dex-route-amount span {
+  white-space: nowrap;
 }
 
 .dex-route-row.best {

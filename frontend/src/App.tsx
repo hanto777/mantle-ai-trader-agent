@@ -1106,7 +1106,7 @@ function App() {
                       </div>
                       <span className="dex-route-path">{quote.route || quote.note}</span>
                     </div>
-                    <div className="text-right">
+                    <div className="dex-route-amount text-right">
                       <strong>{quote.amount_out ? `${quote.amount_out.toFixed(4)} MNT` : quote.status}</strong>
                       <span>
                         {quote.amount_out
