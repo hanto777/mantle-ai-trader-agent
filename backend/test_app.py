@@ -1,7 +1,11 @@
 import unittest
+import importlib
+from unittest.mock import patch
 
 import app.main as app
 from app.dex_quotes import get_read_only_quotes
+
+dex_quotes = importlib.import_module("app.dex_quotes")
 
 
 class TestConfidenceNormalization(unittest.TestCase):
@@ -181,6 +185,9 @@ class TestPaperTrading(unittest.IsolatedAsyncioTestCase):
 
 
 class TestDexQuotePreview(unittest.TestCase):
+    def setUp(self):
+        dex_quotes._openocean_cache.clear()
+
     def test_quote_snapshot_is_read_only(self):
         def fake_openocean(amount_in):
             return {
@@ -239,6 +246,33 @@ class TestDexQuotePreview(unittest.TestCase):
     def test_quote_snapshot_rejects_unsupported_symbol(self):
         with self.assertRaises(ValueError):
             get_read_only_quotes("BTC/USDT", 100)
+
+    def test_openocean_retries_after_temporary_failure(self):
+        payload = {
+            "outAmount": "200000000000000000000",
+            "outToken": {"decimals": 18},
+            "dexes": [{"dexCode": "MerchantMoe"}],
+        }
+        with patch.object(dex_quotes, "_request_openocean_quote", side_effect=[TimeoutError("slow"), payload]) as request:
+            quote = dex_quotes.fetch_openocean_quote(100)
+
+        self.assertEqual(request.call_count, 2)
+        self.assertEqual(quote["status"], "available")
+        self.assertAlmostEqual(quote["amount_out"], 200)
+
+    def test_openocean_uses_recent_quote_after_retries_fail(self):
+        payload = {
+            "outAmount": "200000000000000000000",
+            "outToken": {"decimals": 18},
+            "dexes": [{"dexCode": "MerchantMoe"}],
+        }
+        with patch.object(dex_quotes, "_request_openocean_quote", return_value=payload):
+            dex_quotes.fetch_openocean_quote(100)
+        with patch.object(dex_quotes, "_request_openocean_quote", side_effect=TimeoutError("slow")):
+            quote = dex_quotes.fetch_openocean_quote(100)
+
+        self.assertTrue(quote["stale"])
+        self.assertIn("temporary API timeout", quote["note"])
 
 if __name__ == "__main__":
     unittest.main()

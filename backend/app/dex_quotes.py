@@ -1,8 +1,11 @@
 import json
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from copy import deepcopy
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
+from threading import Lock
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -23,6 +26,10 @@ UNISWAP_V3_QUOTE_SELECTOR = "c6a5026a"
 
 AGNI_FEE_TIERS = (100, 500, 3000, 10_000)
 UNISWAP_FEE_TIERS = (100, 500, 3000, 10_000)
+OPENOCEAN_TIMEOUTS = (6, 14)
+OPENOCEAN_CACHE_TTL_SECONDS = 120
+_openocean_cache = {}
+_openocean_cache_lock = Lock()
 
 
 def _as_decimal(value, default="0") -> Decimal:
@@ -116,7 +123,24 @@ def _available_quote(provider: str, amount_in: float, amount_out_wei: int, route
     }
 
 
-def fetch_openocean_quote(amount_in: float, timeout: int = 8) -> dict:
+def _request_openocean_quote(url: str, timeout: int) -> dict:
+    request = Request(url, headers={"Accept": "application/json", "User-Agent": "Mantle-AI-Trader/0.6"})
+    with urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _cached_openocean_quote(amount_in: float) -> dict | None:
+    with _openocean_cache_lock:
+        cached = _openocean_cache.get(amount_in)
+        if not cached or time.monotonic() - cached["stored_at"] > OPENOCEAN_CACHE_TTL_SECONDS:
+            return None
+        quote = deepcopy(cached["quote"])
+    quote["note"] = "Recent OpenOcean quote used after a temporary API timeout"
+    quote["stale"] = True
+    return quote
+
+
+def fetch_openocean_quote(amount_in: float) -> dict:
     params = urlencode(
         {
             "inTokenAddress": MANTLE_USDT_ADDRESS,
@@ -126,10 +150,19 @@ def fetch_openocean_quote(amount_in: float, timeout: int = 8) -> dict:
         }
     )
     url = f"https://open-api.openocean.finance/v3/{MANTLE_CHAIN_ID}/quote?{params}"
-    request = Request(url, headers={"Accept": "application/json", "User-Agent": "Mantle-AI-Trader/0.6"})
-
-    with urlopen(request, timeout=timeout) as response:
-        body = json.loads(response.read().decode("utf-8"))
+    body = None
+    last_error = None
+    for timeout in OPENOCEAN_TIMEOUTS:
+        try:
+            body = _request_openocean_quote(url, timeout)
+            break
+        except Exception as exc:
+            last_error = exc
+    if body is None:
+        cached = _cached_openocean_quote(amount_in)
+        if cached:
+            return cached
+        raise last_error or ValueError("OpenOcean quote request failed")
 
     payload = body.get("data") if isinstance(body.get("data"), dict) else body
     if not isinstance(payload, dict) or payload.get("outAmount") is None:
@@ -140,7 +173,7 @@ def fetch_openocean_quote(amount_in: float, timeout: int = 8) -> dict:
     if amount_out <= 0:
         raise ValueError("OpenOcean returned an empty quote")
 
-    return {
+    quote = {
         "provider": "OpenOcean",
         "kind": "aggregator",
         "status": "available",
@@ -152,6 +185,9 @@ def fetch_openocean_quote(amount_in: float, timeout: int = 8) -> dict:
         "price_impact_percent": payload.get("priceImpact"),
         "note": "Live Mantle mainnet quote",
     }
+    with _openocean_cache_lock:
+        _openocean_cache[amount_in] = {"stored_at": time.monotonic(), "quote": deepcopy(quote)}
+    return quote
 
 
 def fetch_merchant_moe_quote(amount_in: float) -> dict:

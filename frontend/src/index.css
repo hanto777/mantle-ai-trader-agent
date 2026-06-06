@@ -769,6 +769,7 @@ button {
   white-space: nowrap;
 }
 .dex-best-tag { margin-top: 0 !important; border-radius: 999px; padding: 2px 5px; color: #34d399 !important; background: rgba(52, 211, 153, .12); text-transform: uppercase; }
+.dex-cache-tag { margin-top: 0 !important; border-radius: 999px; padding: 2px 5px; color: #facc15 !important; background: rgba(250, 204, 21, .1); text-transform: uppercase; }
 
 .dex-safety-line {
   flex-wrap: wrap;

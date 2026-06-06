@@ -131,6 +131,7 @@ type DexQuote = {
   estimated_gas?: number | string | null
   price_impact_percent?: number | string | null
   difference_from_best_percent?: number
+  stale?: boolean
   note: string
 }
 
@@ -1101,6 +1102,7 @@ function App() {
                       <div className="flex items-center gap-2">
                         <strong>{quote.provider}</strong>
                         {dexQuotes?.best_provider === quote.provider && <span className="dex-best-tag">best</span>}
+                        {quote.stale && <span className="dex-cache-tag">cached</span>}
                       </div>
                       <span className="dex-route-path">{quote.route || quote.note}</span>
                     </div>
