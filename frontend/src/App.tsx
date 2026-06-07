@@ -5,6 +5,7 @@ import { TradeSignalRegistryABI, TRADE_SIGNAL_REGISTRY_ADDRESS, MANTLE_SEPOLIA_C
 import { AnalysisCreditVaultABI, ANALYSIS_CREDIT_REQUIRED, ANALYSIS_CREDIT_VAULT_ADDRESS } from './abi/AnalysisCreditVault'
 
 const apiBase = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000'
+const portfolioApiBase = import.meta.env.VITE_PORTFOLIO_API_BASE_URL || apiBase
 
 const MARKETS = [
   { symbol: 'MNT/USDT', label: 'MNT', tone: 'Mantle native' },
@@ -527,7 +528,7 @@ function App() {
     setPortfolioError(null)
     try {
       const ids = PORTFOLIO_CATALOG.map((asset) => asset.id).join(',')
-      const response = await fetch(`${apiBase}/api/portfolio/markets?ids=${encodeURIComponent(ids)}`)
+      const response = await fetch(`${portfolioApiBase}/api/portfolio/markets?ids=${encodeURIComponent(ids)}`)
       if (!response.ok) {
         throw new Error(await response.text() || 'Failed to fetch portfolio prices')
       }

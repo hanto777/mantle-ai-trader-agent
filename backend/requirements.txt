@@ -7,3 +7,4 @@ pandas==2.2.3
 mplfinance==0.12.9b1
 web3>=7.0.0
 eth-account>=0.13.0
+truststore>=0.10.4

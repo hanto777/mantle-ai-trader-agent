@@ -23,6 +23,12 @@ from pydantic import BaseModel, Field
 from .dex_quotes import get_read_only_quotes
 
 try:
+    import truststore
+    truststore.inject_into_ssl()
+except ImportError:
+    pass
+
+try:
     from eth_account import Account
     from eth_account.messages import encode_defunct
     from web3 import Web3
