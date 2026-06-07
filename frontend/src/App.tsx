@@ -526,20 +526,30 @@ function App() {
   const fetchPortfolioMarkets = async () => {
     setPortfolioLoading(true)
     setPortfolioError(null)
-    try {
-      const ids = PORTFOLIO_CATALOG.map((asset) => asset.id).join(',')
-      const response = await fetch(`${portfolioApiBase}/api/portfolio/markets?ids=${encodeURIComponent(ids)}`)
-      if (!response.ok) {
-        throw new Error(await response.text() || 'Failed to fetch portfolio prices')
+    const ids = PORTFOLIO_CATALOG.map((asset) => asset.id).join(',')
+    let lastError = 'Failed to fetch portfolio prices'
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        const response = await fetch(`${portfolioApiBase}/api/portfolio/markets?ids=${encodeURIComponent(ids)}`)
+        if (!response.ok) {
+          throw new Error(await response.text() || lastError)
+        }
+        const data = (await response.json()) as PortfolioMarketsResponse
+        setPortfolioMarkets(Object.fromEntries(data.assets.map((asset) => [asset.id, asset])))
+        setPortfolioSource(data.source)
+        setPortfolioLoading(false)
+        return
+      } catch (err: any) {
+        lastError = err?.message || lastError
+        if (attempt < 2) {
+          await new Promise((resolve) => window.setTimeout(resolve, 2500))
+        }
       }
-      const data = (await response.json()) as PortfolioMarketsResponse
-      setPortfolioMarkets(Object.fromEntries(data.assets.map((asset) => [asset.id, asset])))
-      setPortfolioSource(data.source)
-    } catch (err: any) {
-      setPortfolioError(err?.message || 'Failed to fetch portfolio prices')
-    } finally {
-      setPortfolioLoading(false)
     }
+
+    setPortfolioError(`${lastError}. Press Refresh prices to try again.`)
+    setPortfolioLoading(false)
   }
 
   const fetchDexQuotes = async () => {

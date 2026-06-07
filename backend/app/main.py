@@ -182,6 +182,7 @@ PORTFOLIO_ASSETS = {
     "lido-dao": {"symbol": "LDO", "name": "Lido DAO", "exchange_symbol": "LDO/USDT"},
     "aptos": {"symbol": "APT", "name": "Aptos", "exchange_symbol": "APT/USDT"},
 }
+portfolio_market_cache: dict[str, dict] = {}
 
 
 def fetch_portfolio_market_data(asset_ids: list[str]) -> list[dict]:
@@ -215,22 +216,42 @@ def fetch_portfolio_market_data(asset_ids: list[str]) -> list[dict]:
     ]
 
 
-def fetch_portfolio_exchange_fallback(asset_ids: list[str]) -> list[dict]:
-    exchange = ccxt.bybit({"enableRateLimit": True})
-    exchange.options["defaultType"] = "spot"
+def fetch_portfolio_defillama_fallback(asset_ids: list[str]) -> list[dict]:
+    coin_keys = ",".join(f"coingecko:{asset_id}" for asset_id in asset_ids)
+    request = urllib.request.Request(
+        f"https://coins.llama.fi/prices/current/{coin_keys}",
+        headers={"Accept": "application/json", "User-Agent": "Mantle-AI-Trader/1.0"},
+    )
+    with urllib.request.urlopen(request, timeout=12) as response:
+        prices = json.loads(response.read().decode("utf-8")).get("coins", {})
+
     assets = []
     for asset_id in asset_ids:
         asset = PORTFOLIO_ASSETS[asset_id]
-        ticker = exchange.fetch_ticker(asset["exchange_symbol"])
+        price_data = prices.get(f"coingecko:{asset_id}", {})
+        if not price_data.get("price"):
+            raise ValueError(f"DefiLlama price unavailable for {asset_id}")
+        cached = portfolio_market_cache.get(asset_id, {})
         assets.append({
             "id": asset_id,
             "symbol": asset["symbol"],
             "name": asset["name"],
-            "price_usd": float(ticker.get("last") or 0),
-            "change_24h_percent": float(ticker.get("percentage") or 0),
-            "last_updated_at": int((ticker.get("timestamp") or 0) / 1000) or None,
+            "price_usd": float(price_data["price"]),
+            "change_24h_percent": float(cached.get("change_24h_percent") or 0),
+            "last_updated_at": price_data.get("timestamp"),
         })
     return assets
+
+
+def cache_portfolio_assets(assets: list[dict]) -> None:
+    for asset in assets:
+        portfolio_market_cache[asset["id"]] = dict(asset)
+
+
+def get_cached_portfolio_assets(asset_ids: list[str]) -> list[dict]:
+    if not all(asset_id in portfolio_market_cache for asset_id in asset_ids):
+        raise ValueError("No complete cached portfolio price snapshot")
+    return [dict(portfolio_market_cache[asset_id]) for asset_id in asset_ids]
 
 
 async def get_latest_price(symbol: str) -> float:
@@ -862,12 +883,18 @@ async def portfolio_markets(ids: str = Query(default="mantle,bitcoin,ethereum,so
     try:
         assets = await run_in_threadpool(fetch_portfolio_market_data, requested_ids)
         source = "CoinGecko"
+        cache_portfolio_assets(assets)
     except Exception:
         try:
-            assets = await run_in_threadpool(fetch_portfolio_exchange_fallback, requested_ids)
-            source = "Bybit Spot fallback"
-        except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"Failed to fetch portfolio prices: {exc}")
+            assets = await run_in_threadpool(fetch_portfolio_defillama_fallback, requested_ids)
+            source = "DefiLlama fallback"
+            cache_portfolio_assets(assets)
+        except Exception:
+            try:
+                assets = get_cached_portfolio_assets(requested_ids)
+                source = "Cached market snapshot"
+            except Exception as exc:
+                raise HTTPException(status_code=502, detail=f"Failed to fetch portfolio prices: {exc}")
 
     return {"source": source, "currency": "usd", "assets": assets}
 

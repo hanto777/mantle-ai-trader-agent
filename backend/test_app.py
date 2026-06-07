@@ -29,6 +29,27 @@ class TestPortfolioMarkets(unittest.TestCase):
         self.assertEqual(result[0]["price_usd"], 0.54)
         self.assertEqual(result[0]["change_24h_percent"], 2.5)
 
+    def test_defillama_fallback_returns_price_and_uses_cached_change(self):
+        app.portfolio_market_cache["mantle"] = {"change_24h_percent": 2.5}
+        response = {
+            "coins": {
+                "coingecko:mantle": {
+                    "price": 0.55,
+                    "timestamp": 456,
+                }
+            }
+        }
+        mocked_response = unittest.mock.MagicMock()
+        mocked_response.read.return_value = json.dumps(response).encode("utf-8")
+        mocked_response.__enter__.return_value = mocked_response
+
+        with patch("urllib.request.urlopen", return_value=mocked_response):
+            result = app.fetch_portfolio_defillama_fallback(["mantle"])
+
+        self.assertEqual(result[0]["price_usd"], 0.55)
+        self.assertEqual(result[0]["change_24h_percent"], 2.5)
+        self.assertEqual(result[0]["last_updated_at"], 456)
+
 
 class TestConfidenceNormalization(unittest.TestCase):
     """Test confidence normalization from Gemini responses."""
