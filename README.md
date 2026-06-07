@@ -128,6 +128,7 @@ Backend deployment requirements:
 
 - `GET /health` returns `{ "ok": true }`
 - `GET /api/billing/status` returns billing metadata for the credit-gated AI analysis flow.
+- `GET /api/portfolio/markets?ids=mantle,bitcoin` returns current CoinGecko prices for the manual investment portfolio.
 - `GET /api/dex/quotes?symbol=MNT/USDT&amount_in=100` returns a read-only Mantle mainnet route preview.
 
 The DEX quote preview never returns approval or transaction calldata and cannot submit a swap. It compares a live OpenOcean aggregate quote with direct read-only contract quotes from Merchant Moe, Agni, and Uniswap V3. The configured input asset is Mantle's bridged legacy USDT contract, not USDT0.
@@ -160,6 +161,7 @@ Each `Analyze Now` request costs `1` demo AI credit across all supported pairs. 
 - Read-only Mantle DEX route comparison
 - OpenOcean, Merchant Moe, Agni, and Uniswap V3 quotes
 - DEX selection, BUY/SELL setup preview, slippage, and minimum received
+- Manual investment portfolio with browser-local positions, live CoinGecko valuation, 24h change, and PnL
 
 ### Phase 2: Verifiable performance
 

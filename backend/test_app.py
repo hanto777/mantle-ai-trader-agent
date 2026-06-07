@@ -1,11 +1,33 @@
 import unittest
 import importlib
+import json
 from unittest.mock import patch
 
 import app.main as app
 from app.dex_quotes import get_read_only_quotes
 
 dex_quotes = importlib.import_module("app.dex_quotes")
+
+
+class TestPortfolioMarkets(unittest.TestCase):
+    def test_fetch_portfolio_market_data_normalizes_coingecko_response(self):
+        response = {
+            "mantle": {
+                "usd": 0.54,
+                "usd_24h_change": 2.5,
+                "last_updated_at": 123,
+            }
+        }
+        mocked_response = unittest.mock.MagicMock()
+        mocked_response.read.return_value = json.dumps(response).encode("utf-8")
+        mocked_response.__enter__.return_value = mocked_response
+
+        with patch("urllib.request.urlopen", return_value=mocked_response):
+            result = app.fetch_portfolio_market_data(["mantle"])
+
+        self.assertEqual(result[0]["symbol"], "MNT")
+        self.assertEqual(result[0]["price_usd"], 0.54)
+        self.assertEqual(result[0]["change_24h_percent"], 2.5)
 
 
 class TestConfidenceNormalization(unittest.TestCase):

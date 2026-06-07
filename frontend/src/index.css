@@ -927,6 +927,59 @@ button {
 .trade-preview-grid span { color: #64748b; font-size: 9px; text-transform: uppercase; }
 .trade-preview-grid strong { margin-top: 5px; color: #f8fafc; font-size: 11px; }
 
+.portfolio-add-grid {
+  display: grid;
+  grid-template-columns: 1.25fr 1fr 1fr auto;
+  gap: 10px;
+}
+
+.portfolio-add-grid label {
+  display: grid;
+  gap: 6px;
+  color: #94a3b8;
+  font: 700 9px ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+}
+
+.portfolio-add-grid input,
+.portfolio-add-grid select {
+  min-width: 0;
+  border: 1px solid rgba(103, 232, 249, .18);
+  border-radius: 8px;
+  padding: 11px 12px;
+  outline: 0;
+  background: rgba(2, 8, 23, .68);
+  color: #f8fafc;
+  font: 700 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-transform: none;
+}
+
+.portfolio-table {
+  overflow: hidden;
+  border: 1px solid rgba(71, 85, 105, .48);
+  border-radius: 12px;
+  background: rgba(2, 8, 23, .48);
+}
+
+.portfolio-row {
+  display: grid;
+  grid-template-columns: 1.2fr .9fr 1.25fr 1fr 1fr auto;
+  align-items: center;
+  gap: 12px;
+  border-top: 1px solid rgba(71, 85, 105, .32);
+  padding: 12px 14px;
+}
+
+.portfolio-row:first-child { border-top: 0; }
+.portfolio-row > div { min-width: 0; }
+.portfolio-row strong,
+.portfolio-row span { display: block; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.portfolio-row strong { overflow: hidden; color: #f8fafc; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.portfolio-row span { margin-top: 4px; color: #94a3b8; font-size: 10px; }
+.portfolio-header { color: #64748b; font: 700 9px ui-monospace, SFMono-Regular, Menlo, monospace; text-transform: uppercase; letter-spacing: .08em; }
+.portfolio-header span { margin-top: 0; }
+
 @keyframes orbit { from { rotate: 0deg; } to { rotate: 360deg; } }
 @keyframes core-pulse { 0%, 100% { transform: scale(1); box-shadow: 0 0 44px rgba(34, 211, 238, .8); } 50% { transform: scale(1.28); box-shadow: 0 0 70px rgba(34, 211, 238, 1); } }
 @keyframes core-breathe { 0%, 100% { transform: scale(.9); opacity: .45; } 50% { transform: scale(1.18); opacity: .85; } }
@@ -943,4 +996,7 @@ button {
   .indicator-grid { grid-template-columns: 1fr; }
   .ai-action-dock { align-items: stretch; flex-direction: column; }
   .ai-action-dock > div:last-child { display: grid; grid-template-columns: 1fr; }
+  .portfolio-add-grid { grid-template-columns: 1fr; }
+  .portfolio-table { overflow-x: auto; }
+  .portfolio-row { min-width: 820px; }
 }

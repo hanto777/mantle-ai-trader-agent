@@ -28,6 +28,19 @@ const ANALYSIS_METHODS = [
   { label: 'Final decision', value: 'Combining every signal into BUY or HOLD with a confidence score', tone: 'green' },
 ] as const
 
+const PORTFOLIO_CATALOG = [
+  { id: 'mantle', symbol: 'MNT', name: 'Mantle' },
+  { id: 'bitcoin', symbol: 'BTC', name: 'Bitcoin' },
+  { id: 'ethereum', symbol: 'ETH', name: 'Ethereum' },
+  { id: 'solana', symbol: 'SOL', name: 'Solana' },
+  { id: 'arbitrum', symbol: 'ARB', name: 'Arbitrum' },
+  { id: 'optimism', symbol: 'OP', name: 'Optimism' },
+  { id: 'morpho', symbol: 'MORPHO', name: 'Morpho' },
+  { id: 'gmx', symbol: 'GMX', name: 'GMX' },
+  { id: 'lido-dao', symbol: 'LDO', name: 'Lido DAO' },
+  { id: 'aptos', symbol: 'APT', name: 'Aptos' },
+] as const
+
 type Candle = {
   timestamp: number
   open: number
@@ -147,8 +160,33 @@ type DexQuoteResponse = {
   warning: string
 }
 
+type PortfolioPosition = {
+  assetId: string
+  quantity: number
+  averageBuyPrice: number
+}
+
+type PortfolioMarket = {
+  id: string
+  symbol: string
+  name: string
+  price_usd: number
+  change_24h_percent: number
+  last_updated_at?: number | null
+}
+
+type PortfolioMarketsResponse = {
+  source: string
+  currency: string
+  assets: PortfolioMarket[]
+}
+
 function formatCurrency(value: number) {
   return `$${value.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',')}`
+}
+
+function formatSignedCurrency(value: number) {
+  return `${value >= 0 ? '+' : '-'}${formatCurrency(Math.abs(value))}`
 }
 
 function App() {
@@ -195,6 +233,20 @@ function App() {
   const [selectedDexProvider, setSelectedDexProvider] = useState<string | null>(null)
   const [tradeSide, setTradeSide] = useState<'BUY' | 'SELL'>('BUY')
   const [slippagePercent, setSlippagePercent] = useState('0.5')
+  const [portfolioPositions, setPortfolioPositions] = useState<PortfolioPosition[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem('mantle-ai-trader-portfolio') || '[]')
+    } catch {
+      return []
+    }
+  })
+  const [portfolioMarkets, setPortfolioMarkets] = useState<Record<string, PortfolioMarket>>({})
+  const [portfolioSource, setPortfolioSource] = useState('CoinGecko')
+  const [portfolioAssetId, setPortfolioAssetId] = useState('mantle')
+  const [portfolioQuantity, setPortfolioQuantity] = useState('')
+  const [portfolioBuyPrice, setPortfolioBuyPrice] = useState('')
+  const [portfolioLoading, setPortfolioLoading] = useState(false)
+  const [portfolioError, setPortfolioError] = useState<string | null>(null)
 
   const creditVaultConfigured = Boolean(ANALYSIS_CREDIT_VAULT_ADDRESS)
   const creditsRequired = billingStatus?.credit_required_for_analysis ?? ANALYSIS_CREDIT_REQUIRED
@@ -468,6 +520,25 @@ function App() {
     }
 
     return message
+  }
+
+  const fetchPortfolioMarkets = async () => {
+    setPortfolioLoading(true)
+    setPortfolioError(null)
+    try {
+      const ids = PORTFOLIO_CATALOG.map((asset) => asset.id).join(',')
+      const response = await fetch(`${apiBase}/api/portfolio/markets?ids=${encodeURIComponent(ids)}`)
+      if (!response.ok) {
+        throw new Error(await response.text() || 'Failed to fetch portfolio prices')
+      }
+      const data = (await response.json()) as PortfolioMarketsResponse
+      setPortfolioMarkets(Object.fromEntries(data.assets.map((asset) => [asset.id, asset])))
+      setPortfolioSource(data.source)
+    } catch (err: any) {
+      setPortfolioError(err?.message || 'Failed to fetch portfolio prices')
+    } finally {
+      setPortfolioLoading(false)
+    }
   }
 
   const fetchDexQuotes = async () => {
@@ -820,6 +891,15 @@ function App() {
   }, [])
 
   useEffect(() => {
+    fetchPortfolioMarkets()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  useEffect(() => {
+    localStorage.setItem('mantle-ai-trader-portfolio', JSON.stringify(portfolioPositions))
+  }, [portfolioPositions])
+
+  useEffect(() => {
     loadCreditBalance()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [walletAddress, isCorrectNetwork])
@@ -860,6 +940,34 @@ function App() {
       setSelectedDexProvider(dexQuotes.best_provider)
     }
   }, [dexQuotes, selectedDexProvider])
+
+  const addPortfolioPosition = () => {
+    const quantity = Number(portfolioQuantity.replace(',', '.'))
+    const averageBuyPrice = Number(portfolioBuyPrice.replace(',', '.'))
+    if (!Number.isFinite(quantity) || quantity <= 0 || !Number.isFinite(averageBuyPrice) || averageBuyPrice <= 0) {
+      setPortfolioError('Enter a valid quantity and average buy price.')
+      return
+    }
+
+    setPortfolioPositions((positions) => {
+      const existing = positions.find((position) => position.assetId === portfolioAssetId)
+      if (!existing) return [...positions, { assetId: portfolioAssetId, quantity, averageBuyPrice }]
+      const totalQuantity = existing.quantity + quantity
+      const weightedBuyPrice = (
+        existing.quantity * existing.averageBuyPrice + quantity * averageBuyPrice
+      ) / totalQuantity
+      return positions.map((position) => position.assetId === portfolioAssetId
+        ? { ...position, quantity: totalQuantity, averageBuyPrice: weightedBuyPrice }
+        : position)
+    })
+    setPortfolioQuantity('')
+    setPortfolioBuyPrice('')
+    setPortfolioError(null)
+  }
+
+  const removePortfolioPosition = (assetId: string) => {
+    setPortfolioPositions((positions) => positions.filter((position) => position.assetId !== assetId))
+  }
 
   const confidencePercent = aiResult ? Math.round(aiResult.confidence * 100) : 0
   const supportLevel = aiResult?.support_price ?? null
@@ -912,6 +1020,35 @@ function App() {
     ? Math.min(reasoningStepIndex, ANALYSIS_METHODS.length - 6)
     : 0
   const visibleAnalysisMethodSteps = analysisMethodSteps.slice(methodWindowStart, methodWindowStart + 6)
+  const portfolioRows = portfolioPositions.map((position) => {
+    const catalogAsset = PORTFOLIO_CATALOG.find((asset) => asset.id === position.assetId)
+    const market = portfolioMarkets[position.assetId]
+    const currentPrice = market?.price_usd ?? 0
+    const currentValue = currentPrice * position.quantity
+    const investedValue = position.averageBuyPrice * position.quantity
+    const pnl = currentValue - investedValue
+    const pnlPercent = investedValue ? (pnl / investedValue) * 100 : 0
+    const change24hPercent = market?.change_24h_percent ?? 0
+    const previousValue = change24hPercent > -100 ? currentValue / (1 + change24hPercent / 100) : currentValue
+    return {
+      ...position,
+      name: market?.name ?? catalogAsset?.name ?? position.assetId,
+      symbol: market?.symbol ?? catalogAsset?.symbol ?? position.assetId.toUpperCase(),
+      currentPrice,
+      currentValue,
+      investedValue,
+      pnl,
+      pnlPercent,
+      change24hPercent,
+      change24hValue: currentValue - previousValue,
+    }
+  }).sort((a, b) => b.currentValue - a.currentValue)
+  const portfolioValue = portfolioRows.reduce((sum, row) => sum + row.currentValue, 0)
+  const portfolioInvested = portfolioRows.reduce((sum, row) => sum + row.investedValue, 0)
+  const portfolioPnl = portfolioValue - portfolioInvested
+  const portfolioPnlPercent = portfolioInvested ? (portfolioPnl / portfolioInvested) * 100 : 0
+  const portfolio24hChange = portfolioRows.reduce((sum, row) => sum + row.change24hValue, 0)
+  const topPortfolioPerformer = [...portfolioRows].sort((a, b) => b.change24hPercent - a.change24hPercent)[0]
 
   return (
     <div className="terminal-shell min-h-screen text-slate-100">
@@ -1459,26 +1596,46 @@ function App() {
           </div>
         </section>
 
-        <section className="grid gap-6 lg:grid-cols-[1fr_0.8fr]">
-          <div className="glass-panel p-5">
-            <div className="mb-4 flex items-center justify-between">
-              <h3 className="text-lg font-semibold text-white">Agent Controls</h3>
-              <span className={account?.agent_running ? 'signal-pill buy' : 'signal-pill hold'}>{account?.agent_running ? 'Running' : 'Stopped'}</span>
+        <section className="glass-panel p-5">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <div className="font-mono text-[10px] uppercase tracking-[0.28em] text-cyan-200">Manual investment portfolio</div>
+              <h3 className="mt-2 text-xl font-semibold text-white">Portfolio Intelligence</h3>
+              <p className="mt-2 max-w-2xl text-sm text-slate-400">Track positions you bought anywhere. Prices refresh through CoinGecko; quantities and cost basis stay in this browser.</p>
             </div>
-            <div className="grid gap-3 sm:grid-cols-3">
-              <button onClick={() => handleAgentAction('start')} disabled={controlLoading || account?.agent_running} className="command-button alt px-4 py-3 text-sm font-bold disabled:opacity-50">Start Agent</button>
-              <button onClick={() => handleAgentAction('stop')} disabled={controlLoading || !account?.agent_running} className="ghost-button px-4 py-3 text-sm font-semibold disabled:opacity-50">Stop Agent</button>
-              <button onClick={handleReset} disabled={controlLoading} className="ghost-button px-4 py-3 text-sm font-semibold disabled:opacity-50">Reset Account</button>
+            <div className="flex flex-wrap gap-2">
+              <button onClick={fetchPortfolioMarkets} disabled={portfolioLoading} className="ghost-button px-3 py-2 text-xs disabled:opacity-50">{portfolioLoading ? 'Refreshing...' : 'Refresh prices'}</button>
+              <button disabled className="command-button alt px-3 py-2 text-xs font-bold opacity-60">AI Portfolio Analysis · 3 credits</button>
             </div>
-            {statusError && <div className="alert-card mt-4 p-3 text-sm text-red-200">{statusError}</div>}
           </div>
-          <div className="glass-panel p-5">
-            <div className="font-mono text-[10px] uppercase tracking-[0.28em] text-slate-400">Analysis logs</div>
-            <div className="result-card mt-4 space-y-3 p-4 text-sm text-slate-300">
-              <div className="flex justify-between border-b border-slate-800 pb-3"><span>Last analysis</span><span>{aiTime || '-'}</span></div>
-              <div><p className="text-slate-500">Signal</p><p className="text-white">{aiResult?.action || '-'}</p></div>
-              <div><p className="text-slate-500">Reason</p><p>{aiResult?.reason || account?.last_hold_reason || '-'}</p></div>
-            </div>
+
+          <div className="mt-5 grid gap-3 md:grid-cols-4">
+            <div className="stat-tile"><span>Current balance</span><strong>{formatCurrency(portfolioValue)}</strong><small>{portfolioRows.length} tracked assets</small></div>
+            <div className="stat-tile"><span>24h portfolio change</span><strong className={portfolio24hChange >= 0 ? 'text-emerald-300' : 'text-red-300'}>{formatSignedCurrency(portfolio24hChange)}</strong><small>{portfolioSource} market prices</small></div>
+            <div className="stat-tile"><span>Total profit / loss</span><strong className={portfolioPnl >= 0 ? 'text-emerald-300' : 'text-red-300'}>{formatSignedCurrency(portfolioPnl)}</strong><small>{portfolioPnlPercent >= 0 ? '+' : ''}{portfolioPnlPercent.toFixed(2)}%</small></div>
+            <div className="stat-tile"><span>Top performer · 24h</span><strong>{topPortfolioPerformer?.symbol ?? '-'}</strong><small className={topPortfolioPerformer && topPortfolioPerformer.change24hPercent >= 0 ? 'text-emerald-300' : 'text-red-300'}>{topPortfolioPerformer ? `${topPortfolioPerformer.change24hPercent >= 0 ? '+' : ''}${topPortfolioPerformer.change24hPercent.toFixed(2)}%` : 'Add a position'}</small></div>
+          </div>
+
+          <div className="portfolio-add-grid mt-5">
+            <label><span>Asset</span><select value={portfolioAssetId} onChange={(event) => setPortfolioAssetId(event.target.value)}>{PORTFOLIO_CATALOG.map((asset) => <option key={asset.id} value={asset.id}>{asset.name} · {asset.symbol}</option>)}</select></label>
+            <label><span>Quantity</span><input value={portfolioQuantity} onChange={(event) => setPortfolioQuantity(event.target.value)} inputMode="decimal" placeholder="261.43" /></label>
+            <label><span>Average buy price · USD</span><input value={portfolioBuyPrice} onChange={(event) => setPortfolioBuyPrice(event.target.value)} inputMode="decimal" placeholder="1.00" /></label>
+            <button onClick={addPortfolioPosition} className="command-button px-4 py-3 text-sm font-bold">Add position</button>
+          </div>
+          {portfolioError && <div className="alert-card mt-3 p-3 text-sm text-red-200">{portfolioError}</div>}
+
+          <div className="portfolio-table mt-5">
+            <div className="portfolio-row portfolio-header"><span>Asset</span><span>Price / 24h</span><span>Holdings</span><span>Value</span><span>PnL</span><span>Action</span></div>
+            {portfolioRows.length ? portfolioRows.map((row) => (
+              <div key={row.assetId} className="portfolio-row">
+                <div><strong>{row.name}</strong><span>{row.symbol}</span></div>
+                <div><strong>{formatCurrency(row.currentPrice)}</strong><span className={row.change24hPercent >= 0 ? 'text-emerald-300' : 'text-red-300'}>{row.change24hPercent >= 0 ? '+' : ''}{row.change24hPercent.toFixed(2)}%</span></div>
+                <div><strong>{row.quantity.toLocaleString(undefined, { maximumFractionDigits: 6 })} {row.symbol}</strong><span>Avg {formatCurrency(row.averageBuyPrice)}</span></div>
+                <div><strong>{formatCurrency(row.currentValue)}</strong><span>Cost {formatCurrency(row.investedValue)}</span></div>
+                <div><strong className={row.pnl >= 0 ? 'text-emerald-300' : 'text-red-300'}>{formatSignedCurrency(row.pnl)}</strong><span>{row.pnlPercent >= 0 ? '+' : ''}{row.pnlPercent.toFixed(2)}%</span></div>
+                <button onClick={() => removePortfolioPosition(row.assetId)} className="ghost-button px-3 py-2 text-xs">Remove</button>
+              </div>
+            )) : <div className="empty-state p-6 text-center text-sm text-slate-400">Add your first position to calculate portfolio value and profit / loss.</div>}
           </div>
         </section>
       </main>

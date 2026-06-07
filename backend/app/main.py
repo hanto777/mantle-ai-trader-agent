@@ -1,6 +1,8 @@
 import os
 import asyncio
 import json
+import urllib.parse
+import urllib.request
 from datetime import datetime, timezone
 from typing import Literal, Optional
 from enum import Enum
@@ -161,6 +163,69 @@ ANALYSIS_CREDIT_VAULT_ABI = [
 
 
 # ===== Utility Functions =====
+
+PORTFOLIO_ASSETS = {
+    "mantle": {"symbol": "MNT", "name": "Mantle", "exchange_symbol": "MNT/USDT"},
+    "bitcoin": {"symbol": "BTC", "name": "Bitcoin", "exchange_symbol": "BTC/USDT"},
+    "ethereum": {"symbol": "ETH", "name": "Ethereum", "exchange_symbol": "ETH/USDT"},
+    "solana": {"symbol": "SOL", "name": "Solana", "exchange_symbol": "SOL/USDT"},
+    "arbitrum": {"symbol": "ARB", "name": "Arbitrum", "exchange_symbol": "ARB/USDT"},
+    "optimism": {"symbol": "OP", "name": "Optimism", "exchange_symbol": "OP/USDT"},
+    "morpho": {"symbol": "MORPHO", "name": "Morpho", "exchange_symbol": "MORPHO/USDT"},
+    "gmx": {"symbol": "GMX", "name": "GMX", "exchange_symbol": "GMX/USDT"},
+    "lido-dao": {"symbol": "LDO", "name": "Lido DAO", "exchange_symbol": "LDO/USDT"},
+    "aptos": {"symbol": "APT", "name": "Aptos", "exchange_symbol": "APT/USDT"},
+}
+
+
+def fetch_portfolio_market_data(asset_ids: list[str]) -> list[dict]:
+    query = urllib.parse.urlencode({
+        "ids": ",".join(asset_ids),
+        "vs_currencies": "usd",
+        "include_24hr_change": "true",
+        "include_last_updated_at": "true",
+    })
+    request = urllib.request.Request(
+        f"https://api.coingecko.com/api/v3/simple/price?{query}",
+        headers={"Accept": "application/json", "User-Agent": "Mantle-AI-Trader/1.0"},
+    )
+    demo_key = os.getenv("COINGECKO_DEMO_API_KEY")
+    if demo_key:
+        request.add_header("x-cg-demo-api-key", demo_key)
+
+    with urllib.request.urlopen(request, timeout=12) as response:
+        prices = json.loads(response.read().decode("utf-8"))
+
+    return [
+        {
+            "id": asset_id,
+            "symbol": PORTFOLIO_ASSETS[asset_id]["symbol"],
+            "name": PORTFOLIO_ASSETS[asset_id]["name"],
+            "price_usd": float(prices.get(asset_id, {}).get("usd", 0)),
+            "change_24h_percent": float(prices.get(asset_id, {}).get("usd_24h_change") or 0),
+            "last_updated_at": prices.get(asset_id, {}).get("last_updated_at"),
+        }
+        for asset_id in asset_ids
+    ]
+
+
+def fetch_portfolio_exchange_fallback(asset_ids: list[str]) -> list[dict]:
+    exchange = ccxt.bybit({"enableRateLimit": True})
+    exchange.options["defaultType"] = "spot"
+    assets = []
+    for asset_id in asset_ids:
+        asset = PORTFOLIO_ASSETS[asset_id]
+        ticker = exchange.fetch_ticker(asset["exchange_symbol"])
+        assets.append({
+            "id": asset_id,
+            "symbol": asset["symbol"],
+            "name": asset["name"],
+            "price_usd": float(ticker.get("last") or 0),
+            "change_24h_percent": float(ticker.get("percentage") or 0),
+            "last_updated_at": int((ticker.get("timestamp") or 0) / 1000) or None,
+        })
+    return assets
+
 
 async def get_latest_price(symbol: str) -> float:
     exchange = ccxt.bybit({"enableRateLimit": True})
@@ -777,6 +842,28 @@ async def get_market_candles(symbol: str = Query(default="MNT/USDT")):
         "timeframe": "1H",
         "candles": candles,
     }
+
+
+@app.get("/api/portfolio/markets")
+async def portfolio_markets(ids: str = Query(default="mantle,bitcoin,ethereum,solana,arbitrum,optimism")):
+    requested_ids = list(dict.fromkeys(part.strip().lower() for part in ids.split(",") if part.strip()))
+    invalid_ids = [asset_id for asset_id in requested_ids if asset_id not in PORTFOLIO_ASSETS]
+    if invalid_ids:
+        raise HTTPException(status_code=400, detail=f"Unsupported portfolio assets: {', '.join(invalid_ids)}")
+    if not requested_ids:
+        raise HTTPException(status_code=400, detail="Select at least one portfolio asset")
+
+    try:
+        assets = await run_in_threadpool(fetch_portfolio_market_data, requested_ids)
+        source = "CoinGecko"
+    except Exception:
+        try:
+            assets = await run_in_threadpool(fetch_portfolio_exchange_fallback, requested_ids)
+            source = "Bybit Spot fallback"
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Failed to fetch portfolio prices: {exc}")
+
+    return {"source": source, "currency": "usd", "assets": assets}
 
 
 @app.get("/api/ai/status")
