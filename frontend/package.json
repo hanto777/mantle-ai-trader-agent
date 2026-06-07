@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "erc8004:prepare": "node --use-system-ca scripts/prepare-erc8004-registration.mjs"
   },
   "dependencies": {
     "lightweight-charts": "^4.0.0",

@@ -1,0 +1,24 @@
+{
+  "type": "https://eips.ethereum.org/EIPS/eip-8004#registration-v1",
+  "name": "Mantle AI Trader",
+  "description": "A safety-first AI DeFi terminal and read-only DEX aggregator for Mantle. It produces explainable BUY/HOLD market signals, compares Mantle DEX quotes, and prepares trade previews without approvals, signatures, or swap execution.",
+  "image": "https://raw.githubusercontent.com/hanto777/mantle-ai-trader-agent/main/frontend/public/mantle-ai-trader-agent.svg",
+  "services": [
+    {
+      "name": "web",
+      "endpoint": "https://github.com/hanto777/mantle-ai-trader-agent"
+    },
+    {
+      "name": "API",
+      "endpoint": "https://mantle-ai-trader-agent.onrender.com"
+    },
+    {
+      "name": "GitHub",
+      "endpoint": "https://github.com/hanto777/mantle-ai-trader-agent"
+    }
+  ],
+  "x402Support": false,
+  "active": true,
+  "registrations": [],
+  "supportedTrust": []
+}

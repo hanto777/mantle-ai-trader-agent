@@ -203,3 +203,37 @@ Mantle AI Trader currently demonstrates:
 - A foundation for future user-confirmed swaps, verifiable strategy performance, recurring AI agents, and a strategy marketplace.
 
 The prototype uses testnet funds for billing and never executes a real trade.
+
+## ERC-8004 Identity Preparation
+
+Mantle AI Trader has a draft ERC-8004 registration file at:
+
+```text
+https://raw.githubusercontent.com/hanto777/mantle-ai-trader-agent/main/frontend/public/erc-8004-agent.json
+```
+
+The registration target is the canonical Identity Registry on Mantle Sepolia only:
+
+```text
+chainId=5003
+IdentityRegistry=0x8004A818BFB912233c491871b3d84c89A494BD9e
+```
+
+Prepare and simulate the `register(agentURI)` call without sending a transaction:
+
+```powershell
+cd frontend
+$env:ERC8004_OWNER_ADDRESS="0xYourMantleSepoliaWallet"
+npm run erc8004:prepare
+```
+
+The script is read-only: it checks the chain and registry bytecode, simulates the call,
+estimates gas, and prints calldata. It contains no signer and cannot send a transaction.
+
+The initial registration file intentionally has an empty `registrations` array because
+the `agentId` is assigned during minting. After registration, add the resulting `agentId`
+and `eip155:5003:0x8004A818BFB912233c491871b3d84c89A494BD9e` registry identifier.
+
+Do not submit the registration transaction until the hackathon organizers confirm whether
+canonical Mantle Sepolia registration satisfies the identity requirement or whether they
+issue a separate official identity NFT.
