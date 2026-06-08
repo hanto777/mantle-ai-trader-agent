@@ -473,13 +473,13 @@ async def _generate_content_with_retry(client, model_name: str, contents: list) 
             message = str(exc)
 
             if status == 429 or "429" in message:
-                raise HTTPException(status_code=429, detail="Достигнут лимит запросов Gemini. Повторите позже.")
+                raise HTTPException(status_code=429, detail="Gemini request limit reached. Please try again later.")
 
             if not _is_gemini_retryable(exc):
-                raise HTTPException(status_code=502, detail="Не удалось получить анализ Gemini. Попробуйте позже.")
+                raise HTTPException(status_code=502, detail="Failed to fetch Gemini analysis. Please try again later.")
 
             if attempt == len(delays):
-                raise HTTPException(status_code=503, detail="Gemini временно перегружен. Повторите анализ через минуту.")
+                raise HTTPException(status_code=503, detail="Gemini is temporarily overloaded. Try again in a minute.")
 
             await asyncio.sleep(delays[attempt])
 
@@ -635,7 +635,7 @@ async def get_gemini_analysis(symbol: str, timeframe: str = "1h") -> dict:
     except HTTPException:
         raise
     except Exception:
-        raise HTTPException(status_code=502, detail="Не удалось получить анализ Gemini. Попробуйте позже.")
+        raise HTTPException(status_code=502, detail="Failed to fetch Gemini analysis. Please try again later.")
 
     text = None
     try:

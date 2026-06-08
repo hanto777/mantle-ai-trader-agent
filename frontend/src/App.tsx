@@ -487,15 +487,15 @@ function App() {
       return 'Wallet signature does not match the connected wallet. Reconnect wallet and try again.'
     }
 
-    if (message.includes('Gemini request limit') || message.includes('429')) {
+    if (message.includes('Gemini request limit') || message.includes('Достигнут лимит запросов Gemini') || message.includes('429')) {
       return 'Gemini request limit reached. Please try again later.'
     }
 
-    if (message.includes('Gemini temporarily overloaded') || message.includes('503')) {
+    if (message.includes('Gemini temporarily overloaded') || message.includes('Gemini is temporarily overloaded') || message.includes('Gemini временно перегружен') || message.includes('503')) {
       return 'Gemini is temporarily overloaded. Try again in a minute.'
     }
 
-    if (message.includes('Failed to fetch Gemini analysis') || message.includes('502')) {
+    if (message.includes('Failed to fetch Gemini analysis') || message.includes('Не удалось получить анализ Gemini') || message.includes('502')) {
       return 'Failed to fetch Gemini analysis. Please try again later.'
     }
 
