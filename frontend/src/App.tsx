@@ -42,6 +42,8 @@ const PORTFOLIO_CATALOG = [
   { id: 'aptos', symbol: 'APT', name: 'Aptos' },
 ] as const
 
+const PORTFOLIO_COLORS = ['#38bdf8', '#8b5cf6', '#22c55e', '#f59e0b', '#f43f5e', '#14b8a6', '#eab308', '#ec4899', '#6366f1', '#84cc16']
+
 type Candle = {
   timestamp: number
   open: number
@@ -117,11 +119,6 @@ type PaperAccount = {
 type AgentStatusResponse = {
   running: boolean
   account: PaperAccount
-}
-
-type TradesResponse = {
-  open_trade: Trade | null
-  trades_history: Trade[]
 }
 
 type BillingStatus = {
@@ -205,7 +202,6 @@ function App() {
   const [statusLoading, setStatusLoading] = useState(false)
   const [statusError, setStatusError] = useState<string | null>(null)
   const [account, setAccount] = useState<PaperAccount | null>(null)
-  const [trades, setTrades] = useState<TradesResponse | null>(null)
   const [controlLoading, setControlLoading] = useState(false)
   // Wallet / on-chain signals
   const [walletAddress, setWalletAddress] = useState<string | null>(null)
@@ -343,19 +339,6 @@ function App() {
     }
   }
 
-  const fetchTrades = async () => {
-    try {
-      const response = await fetch(`${apiBase}/api/trades`)
-      if (!response.ok) {
-        return
-      }
-      const data = (await response.json()) as TradesResponse
-      setTrades(data)
-    } catch {
-      // ignore
-    }
-  }
-
   const fetchBillingStatus = async () => {
     try {
       const response = await fetch(`${apiBase}/api/billing/status`)
@@ -368,7 +351,7 @@ function App() {
   }
 
   const refreshAll = async () => {
-    await Promise.all([fetchMarketCandles(), fetchAgentStatus(), fetchTrades(), fetchBillingStatus()])
+    await Promise.all([fetchMarketCandles(), fetchAgentStatus(), fetchBillingStatus()])
   }
 
   useEffect(() => {
@@ -985,7 +968,6 @@ function App() {
   const resistanceLevel = aiResult?.resistance_price ?? null
   const hourlyIndicators = aiResult?.indicators?.['1h']
   const dailyIndicators = aiResult?.indicators?.['1d']
-  const openTrade = trades?.open_trade ?? account?.open_trade ?? null
   const totalVolume = candles.reduce((sum, candle) => sum + candle.volume, 0)
   const firstClose = candles[0]?.close ?? latestPrice ?? 0
   const marketChange = latestPrice && firstClose ? ((latestPrice - firstClose) / firstClose) * 100 : 0
@@ -1060,6 +1042,22 @@ function App() {
   const portfolioPnlPercent = portfolioInvested ? (portfolioPnl / portfolioInvested) * 100 : 0
   const portfolio24hChange = portfolioRows.reduce((sum, row) => sum + row.change24hValue, 0)
   const topPortfolioPerformer = [...portfolioRows].sort((a, b) => b.change24hPercent - a.change24hPercent)[0]
+  const portfolioAllocation = portfolioRows
+    .filter((row) => row.currentValue > 0 && portfolioValue > 0)
+    .map((row, index) => ({
+      ...row,
+      color: PORTFOLIO_COLORS[index % PORTFOLIO_COLORS.length],
+      allocationPercent: (row.currentValue / portfolioValue) * 100,
+    }))
+  let allocationCursor = 0
+  const allocationGradient = portfolioAllocation.length
+    ? `conic-gradient(${portfolioAllocation.map((row) => {
+      const start = allocationCursor
+      allocationCursor += row.allocationPercent
+      return `${row.color} ${start}% ${allocationCursor}%`
+    }).join(', ')})`
+    : 'conic-gradient(rgba(100, 116, 139, .28) 0 100%)'
+  const largestAllocation = portfolioAllocation[0]
 
   return (
     <div className="terminal-shell min-h-screen text-slate-100">
@@ -1207,7 +1205,7 @@ function App() {
               </div>
               <div className="flex max-w-[13rem] flex-wrap justify-end gap-2">
                 <span className="mini-badge live">Live market data</span>
-                <span className="mini-badge violet">Paper trading</span>
+                <span className="mini-badge violet">DEX intelligence</span>
                 <span className="mini-badge amber">Mantle Sepolia</span>
               </div>
             </div>
@@ -1523,31 +1521,6 @@ function App() {
           </div>
         </section>
 
-        <section className="glass-panel p-5">
-          <div className="mb-4 flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-white">Paper Trading Account</h3>
-            <span className="mini-badge violet">Simulated</span>
-          </div>
-          <div className="grid gap-3 md:grid-cols-5">
-            <div className="stat-tile"><span>Balance</span><strong>{account ? formatCurrency(account.usdt_balance) : '-'}</strong><small>USDT</small></div>
-            <div className="stat-tile"><span>Equity</span><strong>{account ? formatCurrency(account.equity) : '-'}</strong><small>{latestPrice ? `$${latestPrice.toFixed(4)} spot` : '-'}</small></div>
-            <div className="stat-tile"><span>Position</span><strong>{openTrade ? 'LONG MNT' : 'No position'}</strong><small>{openTrade ? `Entry $${openTrade.entry_price.toFixed(4)}` : 'idle'}</small></div>
-            <div className="stat-tile"><span>Unrealized PnL</span><strong>{openTrade?.pnl_usdt ? formatCurrency(openTrade.pnl_usdt) : '$0.00'}</strong><small>{openTrade?.pnl_percent ? `${openTrade.pnl_percent.toFixed(2)}%` : '-'}</small></div>
-            <div className="stat-tile"><span>MNT held</span><strong>{account ? account.mnt_held.toFixed(4) : '-'}</strong><small>{account && latestPrice ? formatCurrency(account.mnt_held * latestPrice) : '-'}</small></div>
-          </div>
-          <div className="risk-panel mt-4">
-            <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-300">Risk Rules</div>
-            <div className="grid gap-2 font-mono text-[10px] text-slate-400 md:grid-cols-6">
-              <span>Mode: <b>Paper trading</b></span>
-              <span>Timeframe: <b>1H</b></span>
-              <span>Take profit: <b>+3%</b></span>
-              <span>Stop: <b>below AI support</b></span>
-              <span>Max positions: <b>1</b></span>
-              <span>Cooldown: <b>{account?.cooldown_remaining ?? 0} candles</b></span>
-            </div>
-          </div>
-        </section>
-
         <section className="grid gap-6 lg:grid-cols-2">
           <div className="glass-panel p-5">
             <div className="mb-4 flex items-center justify-between gap-4">
@@ -1579,31 +1552,34 @@ function App() {
           </div>
 
           <div className="glass-panel p-5">
-            <div className="mb-4 flex items-center justify-between">
-              <h3 className="text-lg font-semibold text-white">Trade History</h3>
-              <button onClick={fetchTrades} className="ghost-button px-3 py-2 text-xs">Refresh</button>
+            <div>
+              <div className="font-mono text-[10px] uppercase tracking-[0.28em] text-cyan-200">Portfolio composition</div>
+              <h3 className="mt-2 text-lg font-semibold text-white">Coin Allocation</h3>
             </div>
-            <div className="space-y-4">
-              <div className="sub-panel p-4">
-                <div className="mb-3 font-mono text-[10px] uppercase tracking-wider text-slate-400">Open trade</div>
-                {openTrade ? (
-                  <div className="grid gap-2 text-sm text-slate-300 sm:grid-cols-2">
-                    <span>Entry ${openTrade.entry_price.toFixed(6)}</span>
-                    <span>Qty {openTrade.quantity.toFixed(4)} MNT</span>
-                    <span>Take profit ${openTrade.take_profit_price.toFixed(6)}</span>
-                    <span>Stop loss ${openTrade.stop_loss_price.toFixed(6)}</span>
+            {portfolioAllocation.length ? (
+              <div className="allocation-layout mt-5">
+                <div className="allocation-donut" style={{ background: allocationGradient }}>
+                  <div className="allocation-donut-center">
+                    <span>{largestAllocation.symbol}</span>
+                    <strong>{formatCurrency(largestAllocation.currentValue)}</strong>
+                    <small>{largestAllocation.allocationPercent.toFixed(1)}%</small>
                   </div>
-                ) : <div className="empty-state p-3 text-sm text-slate-400">No open trade</div>}
+                </div>
+                <div className="allocation-legend">
+                  {portfolioAllocation.map((row) => (
+                    <div key={row.assetId} className="allocation-legend-row">
+                      <i style={{ background: row.color }} />
+                      <span>{row.symbol}</span>
+                      <strong>{row.allocationPercent.toFixed(1)}%</strong>
+                    </div>
+                  ))}
+                </div>
               </div>
-              <div className="sub-panel p-4">
-                <div className="mb-3 font-mono text-[10px] uppercase tracking-wider text-slate-400">Recent closes</div>
-                {trades?.trades_history?.length ? trades.trades_history.slice(-5).reverse().map((trade) => (
-                  <div key={trade.id} className="history-row">
-                    <span>#{trade.id}</span><span>{trade.status}</span><span>{trade.entry_price.toFixed(4)}</span><span>{trade.close_price?.toFixed(4) ?? '-'}</span><span>{trade.pnl_usdt?.toFixed(2) ?? '-'}</span>
-                  </div>
-                )) : <div className="empty-state p-3 text-sm text-slate-400">No closed trades yet</div>}
+            ) : (
+              <div className="empty-state mt-5 p-6 text-center text-sm text-slate-400">
+                Add portfolio positions to display coin allocation.
               </div>
-            </div>
+            )}
           </div>
         </section>
 
