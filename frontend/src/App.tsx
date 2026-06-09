@@ -114,6 +114,15 @@ type AIResult = {
     stochastic_d: number
     stochastic_state: string
   }>
+  historical_setup?: {
+    signal: 'bullish' | 'bearish' | 'neutral' | 'insufficient'
+    similar_cases: number
+    bullish_percent: number
+    bearish_percent: number
+    average_move_percent: number
+    median_move_percent: number
+    evaluation_candles: number
+  }
 }
 
 type Trade = {
@@ -1084,6 +1093,7 @@ function App() {
     ?? selectedMode.trend
   const entryIndicators = aiResult?.indicators?.[resultEntryTimeframe]
   const trendIndicators = aiResult?.indicators?.[resultTrendTimeframe]
+  const historicalSetup = aiResult?.historical_setup
   const totalVolume = candles.reduce((sum, candle) => sum + candle.volume, 0)
   const firstClose = candles[0]?.close ?? latestPrice ?? 0
   const marketChange = latestPrice && firstClose ? ((latestPrice - firstClose) / firstClose) * 100 : 0
@@ -1687,6 +1697,46 @@ function App() {
                       </>}
                     </div>
                   ))}
+                </div>
+              )}
+              {historicalSetup && (
+                <div className={`historical-rsi-card mt-4 ${historicalSetup.signal}`}>
+                  <div className="historical-rsi-visual">
+                    <div className="historical-rsi-orbit">
+                      <i />
+                      <i />
+                      <i />
+                      <div className="historical-rsi-core">
+                        <span>RSI 14</span>
+                        <strong>{entryIndicators?.rsi.toFixed(1) ?? '-'}</strong>
+                        <small>{entryIndicators?.rsi_state ?? 'unknown'}</small>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="historical-rsi-content">
+                    <div className="historical-rsi-heading">
+                      <div>
+                        <span>Historical RSI Signal</span>
+                        <h4>{historicalSetup.signal === 'insufficient' ? 'Awaiting more history' : `${historicalSetup.signal} bias`}</h4>
+                        <p>Current RSI context matched with MACD and Stochastic history on {resultEntryTimeframe.toUpperCase()}.</p>
+                      </div>
+                      <strong className="historical-rsi-score">
+                        {historicalSetup.signal === 'bearish' ? historicalSetup.bearish_percent : historicalSetup.bullish_percent}%
+                        <small>{historicalSetup.signal}</small>
+                      </strong>
+                    </div>
+                    <div className="historical-rsi-balance">
+                      <div style={{ width: `${historicalSetup.bullish_percent}%` }} />
+                      <span>{historicalSetup.bullish_percent}% bullish</span>
+                      <span>{historicalSetup.bearish_percent}% bearish</span>
+                    </div>
+                    <div className="historical-rsi-metrics">
+                      <div><span>Similar cases</span><strong>{historicalSetup.similar_cases}</strong></div>
+                      <div><span>Average move</span><strong>{historicalSetup.average_move_percent >= 0 ? '+' : ''}{historicalSetup.average_move_percent.toFixed(2)}%</strong></div>
+                      <div><span>Median move</span><strong>{historicalSetup.median_move_percent >= 0 ? '+' : ''}{historicalSetup.median_move_percent.toFixed(2)}%</strong></div>
+                      <div><span>Forward window</span><strong>{historicalSetup.evaluation_candles} candles</strong></div>
+                    </div>
+                  </div>
                 </div>
               )}
               {aiError && <div className="alert-card mt-4 p-3 text-sm text-red-200">Analysis error: {aiError}</div>}

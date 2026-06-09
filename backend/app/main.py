@@ -347,6 +347,10 @@ def get_credit_required() -> int:
     return int(os.getenv("ANALYSIS_CREDIT_REQUIRED", "1"))
 
 
+def local_analysis_billing_bypass_enabled() -> bool:
+    return os.getenv("LOCAL_ANALYSIS_BILLING_BYPASS", "").strip().lower() == "true"
+
+
 def get_credit_vault_address() -> str:
     return os.getenv(
         "ANALYSIS_CREDIT_VAULT_ADDRESS",
@@ -715,6 +719,86 @@ def calculate_indicators(ohlcv: list) -> dict:
     }
 
 
+def calculate_historical_setup_match(ohlcv: list, horizon: int = 12) -> dict:
+    if len(ohlcv) < MIN_ANALYSIS_CANDLES + horizon:
+        return {
+            "signal": "insufficient",
+            "similar_cases": 0,
+            "bullish_percent": 0.0,
+            "bearish_percent": 0.0,
+            "average_move_percent": 0.0,
+            "median_move_percent": 0.0,
+            "evaluation_candles": horizon,
+        }
+
+    frame = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
+    close = frame["close"].astype(float)
+    delta = close.diff()
+    gain = delta.clip(lower=0).ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
+    loss = (-delta.clip(upper=0)).ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
+    rsi = 100 - (100 / (1 + gain / loss.replace(0, float("nan"))))
+    macd = close.ewm(span=12, adjust=False).mean() - close.ewm(span=26, adjust=False).mean()
+    macd_signal = macd.ewm(span=9, adjust=False).mean()
+    lowest_low = frame["low"].astype(float).rolling(window=14).min()
+    highest_high = frame["high"].astype(float).rolling(window=14).max()
+    stochastic_k = 100 * (close - lowest_low) / (highest_high - lowest_low).replace(0, float("nan"))
+    stochastic_d = stochastic_k.rolling(window=3).mean()
+
+    current_rsi = float(rsi.iloc[-1]) if not pd.isna(rsi.iloc[-1]) else 50.0
+    current_macd_state = "bullish" if macd.iloc[-1] > macd_signal.iloc[-1] else "bearish"
+    current_stochastic_state = (
+        "oversold" if stochastic_k.iloc[-1] < 20 and stochastic_d.iloc[-1] < 20
+        else "overbought" if stochastic_k.iloc[-1] > 80 and stochastic_d.iloc[-1] > 80
+        else "neutral"
+    )
+
+    forward_returns = []
+    for index in range(MIN_ANALYSIS_CANDLES - 1, len(frame) - horizon - 1):
+        if pd.isna(rsi.iloc[index]) or pd.isna(stochastic_k.iloc[index]) or pd.isna(stochastic_d.iloc[index]):
+            continue
+        macd_state = "bullish" if macd.iloc[index] > macd_signal.iloc[index] else "bearish"
+        stochastic_state = (
+            "oversold" if stochastic_k.iloc[index] < 20 and stochastic_d.iloc[index] < 20
+            else "overbought" if stochastic_k.iloc[index] > 80 and stochastic_d.iloc[index] > 80
+            else "neutral"
+        )
+        if macd_state != current_macd_state or stochastic_state != current_stochastic_state:
+            continue
+        if abs(float(rsi.iloc[index]) - current_rsi) > 10:
+            continue
+        forward_returns.append((float(close.iloc[index + horizon]) / float(close.iloc[index]) - 1) * 100)
+
+    if len(forward_returns) < 5:
+        return {
+            "signal": "insufficient",
+            "similar_cases": len(forward_returns),
+            "bullish_percent": 0.0,
+            "bearish_percent": 0.0,
+            "average_move_percent": 0.0,
+            "median_move_percent": 0.0,
+            "evaluation_candles": horizon,
+        }
+
+    bullish_percent = sum(value > 0 for value in forward_returns) / len(forward_returns) * 100
+    bearish_percent = 100 - bullish_percent
+    average_move = sum(forward_returns) / len(forward_returns)
+    median_move = float(pd.Series(forward_returns).median())
+    signal = (
+        "bullish" if bullish_percent >= 55 and average_move > 0
+        else "bearish" if bearish_percent >= 55 and average_move < 0
+        else "neutral"
+    )
+    return {
+        "signal": signal,
+        "similar_cases": len(forward_returns),
+        "bullish_percent": round(bullish_percent, 1),
+        "bearish_percent": round(bearish_percent, 1),
+        "average_move_percent": round(average_move, 2),
+        "median_move_percent": round(median_move, 2),
+        "evaluation_candles": horizon,
+    }
+
+
 async def get_gemini_analysis(symbol: str, analysis_mode: str = "intraday") -> dict:
     """Fetch Gemini analysis for the symbol."""
     api_key = os.getenv("GEMINI_API_KEY")
@@ -728,7 +812,7 @@ async def get_gemini_analysis(symbol: str, analysis_mode: str = "intraday") -> d
     entry_timeframe = mode["entry"]
     trend_timeframe = mode["trend"]
     entry_result, trend_result = await asyncio.gather(
-        fetch_candles(symbol, entry_timeframe, 121),
+        fetch_candles(symbol, entry_timeframe, 301),
         fetch_candles(symbol, trend_timeframe, 121),
     )
     ohlcv, _ = entry_result
@@ -751,6 +835,7 @@ async def get_gemini_analysis(symbol: str, analysis_mode: str = "intraday") -> d
         entry_timeframe: calculate_indicators(ohlcv),
         trend_timeframe: calculate_indicators(trend_ohlcv),
     }
+    historical_setup = calculate_historical_setup_match(ohlcv)
 
     last100 = ohlcv[-100:]
     df = pd.DataFrame(last100, columns=["timestamp", "open", "high", "low", "close", "volume"])
@@ -790,6 +875,9 @@ async def get_gemini_analysis(symbol: str, analysis_mode: str = "intraday") -> d
         f"If {entry_timeframe.upper()} and {trend_timeframe.upper()} conflict or neither direction is clearly confirmed, "
         "reduce confidence and return HOLD.\n"
         f"Indicators: {json.dumps(indicators, separators=(',', ':'))}\n"
+        f"Historical setup match on the {entry_timeframe.upper()} timeframe: "
+        f"{json.dumps(historical_setup, separators=(',', ':'))}. "
+        "Use this as supporting statistical evidence, not as a standalone decision.\n"
         "Return exactly the following schema:\n"
         "{\n  \"action\": \"BUY\" | \"SELL\" | \"HOLD\",\n  \"support_price\": number,\n  \"resistance_price\": number,\n  \"confidence\": number,\n  \"reason\": string\n}\n"
         f"The reason must clearly explain how the {trend_timeframe.upper()} trend, {entry_timeframe.upper()} setup, "
@@ -839,6 +927,7 @@ async def get_gemini_analysis(symbol: str, analysis_mode: str = "intraday") -> d
         ai = AIResponseModel.parse_obj(parsed)
         result = ai.dict()
         result["indicators"] = indicators
+        result["historical_setup"] = historical_setup
         result["analysis_mode"] = analysis_mode
         result["symbol"] = symbol
         result["model"] = used_model_name
@@ -1107,15 +1196,19 @@ async def ai_status():
 async def billing_status():
     contract_address = get_credit_vault_address()
     auto_consume_enabled = bool(os.getenv("BILLING_OWNER_PRIVATE_KEY")) and Web3 is not None
+    local_bypass = local_analysis_billing_bypass_enabled()
     return {
         "enabled": True,
         "network": "Mantle Sepolia testnet",
         "credit_required_for_analysis": get_credit_required(),
         "contract_address": contract_address or None,
         "auto_consume_enabled": auto_consume_enabled,
+        "local_billing_bypass": local_bypass,
         "signature_required": True,
         "note": (
-            "AI analysis requires a wallet signature and enough Mantle Sepolia demo "
+            "Local billing bypass is enabled; wallet signatures remain required and no credits are consumed."
+            if local_bypass
+            else "AI analysis requires a wallet signature and enough Mantle Sepolia demo "
             "credits. Credits are consumed on-chain after a successful Gemini response."
         ),
     }
@@ -1138,6 +1231,7 @@ async def dex_quotes(
 async def ai_analyze(request: AnalyzeRequest):
     symbol = normalize_symbol(request.symbol)
     credit_amount = get_credit_required()
+    local_bypass = local_analysis_billing_bypass_enabled()
     if request.nonce in used_billing_nonces:
         raise HTTPException(status_code=409, detail="Billing nonce already used")
 
@@ -1150,16 +1244,21 @@ async def ai_analyze(request: AnalyzeRequest):
         request.message,
         request.analysis_mode,
     )
-    await run_in_threadpool(assert_billing_can_consume)
-    balance = await run_in_threadpool(get_credit_balance, wallet_address)
-    if balance < credit_amount:
-        raise HTTPException(status_code=402, detail="Insufficient AI credits")
+    if not local_bypass:
+        await run_in_threadpool(assert_billing_can_consume)
+        balance = await run_in_threadpool(get_credit_balance, wallet_address)
+        if balance < credit_amount:
+            raise HTTPException(status_code=402, detail="Insufficient AI credits")
 
     analysis = await get_gemini_analysis(symbol, request.analysis_mode)
-    consume_tx_hash = await run_in_threadpool(consume_analysis_credit, wallet_address, credit_amount)
+    if local_bypass:
+        analysis["credits_consumed"] = 0
+        analysis["billing_mode"] = "local_billing_bypass"
+    else:
+        consume_tx_hash = await run_in_threadpool(consume_analysis_credit, wallet_address, credit_amount)
+        analysis["credits_consumed"] = credit_amount
+        analysis["credit_consume_tx_hash"] = consume_tx_hash
     used_billing_nonces.add(request.nonce)
-    analysis["credits_consumed"] = credit_amount
-    analysis["credit_consume_tx_hash"] = consume_tx_hash
     return analysis
 
 

@@ -124,6 +124,12 @@ class TestConfidenceNormalization(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "finish reason"):
             app.extract_gemini_json(response)
 
+    def test_local_billing_bypass_is_opt_in(self):
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertFalse(app.local_analysis_billing_bypass_enabled())
+        with patch.dict("os.environ", {"LOCAL_ANALYSIS_BILLING_BYPASS": "true"}, clear=True):
+            self.assertTrue(app.local_analysis_billing_bypass_enabled())
+
 
 class TestMarketCatalog(unittest.TestCase):
     def setUp(self):
@@ -290,6 +296,22 @@ class TestTechnicalIndicators(unittest.TestCase):
         self.assertEqual(result["stochastic_k"], 50.0)
         self.assertEqual(result["stochastic_d"], 50.0)
         self.assertEqual(result["stochastic_state"], "neutral")
+
+    def test_historical_setup_match_returns_expected_shape(self):
+        closes = [100 + (index % 20) * 0.5 + index * 0.03 for index in range(220)]
+
+        result = app.calculate_historical_setup_match(self.make_candles(closes))
+
+        self.assertIn(result["signal"], {"bullish", "bearish", "neutral", "insufficient"})
+        self.assertGreaterEqual(result["similar_cases"], 0)
+        self.assertEqual(result["evaluation_candles"], 12)
+        self.assertIn("average_move_percent", result)
+
+    def test_historical_setup_match_reports_insufficient_short_history(self):
+        result = app.calculate_historical_setup_match(self.make_candles([100.0] * 40))
+
+        self.assertEqual(result["signal"], "insufficient")
+        self.assertEqual(result["similar_cases"], 0)
 
 
 class TestAnalysisModes(unittest.TestCase):
