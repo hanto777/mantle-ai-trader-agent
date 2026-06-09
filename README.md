@@ -85,9 +85,9 @@ Mantle AI Trader uses prepaid AI credits to turn expensive, decision-ready marke
 
 A credit does not pay for a generic chatbot answer. It pays for a decision package that combines:
 
-- Live market candles and multi-timeframe `1H / 1D` context.
+- Live market candles and strategy-aware multi-timeframe context.
 - RSI, MACD, Stochastic, volume, support, and resistance analysis.
-- An explainable `BUY` or `HOLD` decision with confidence and reasoning.
+- An explainable `BUY`, `SELL`, or `HOLD` decision with confidence and reasoning.
 - Real Mantle mainnet quote comparison across OpenOcean, Merchant Moe, Agni, and Uniswap V3.
 - A selected route, slippage configuration, minimum-received preview, and safety warnings.
 - The option to record the resulting signal on-chain as a public receipt.
@@ -150,8 +150,8 @@ The read-only Mantle DEX route terminal remains limited to `MNT/USDT`.
 ### Phase 1: MVP terminal
 
 - Live spot candles
-- Explainable Gemini BUY/HOLD analysis
-- RSI, MACD, and Stochastic across `1H / 1D`
+- Explainable Gemini BUY/SELL/HOLD analysis
+- RSI, MACD, and Stochastic across strategy-specific entry and trend timeframes
 - Paper trading agent
 - On-chain signal recording
 - Mantle Sepolia AI credits
@@ -188,7 +188,7 @@ The read-only Mantle DEX route terminal remains limited to `MNT/USDT`.
 
 Mantle AI Trader is a hybrid AI trading terminal and Mantle DEX intelligence aggregator. It helps a user answer two questions in one workflow: **should I trade this market, and where can I get the best execution?**
 
-The user selects a market, signs a wallet authorization, and spends an on-chain AI credit for an explainable multi-timeframe analysis. Gemini combines chart structure, support and resistance, volume, RSI, MACD, and Stochastic across `1H` and `1D` to return a `BUY` or `HOLD` decision with confidence and readable reasoning.
+The user selects a market and strategy mode, signs a wallet authorization, and spends an on-chain AI credit for an explainable multi-timeframe analysis. Scalping uses `15M + 1H`, Intraday uses `1H + 4H`, Swing uses `4H + 1D`, and Position uses `1D + 1W`. Gemini combines chart structure, support and resistance, volume, RSI, MACD, and Stochastic to return a `BUY`, `SELL`, or `HOLD` decision with confidence and readable reasoning. `SELL` represents a confirmed bearish spot-market exit or exposure-reduction signal, not an automated short position.
 
 After the analysis, the terminal compares real read-only Mantle mainnet quotes from OpenOcean, Merchant Moe, Agni, and Uniswap V3. The user can select a DEX route and prepare a BUY or SELL setup with configurable slippage and minimum-received protection. Transaction creation, approvals, signatures, and swaps remain disabled in the current safety-first prototype.
 
@@ -198,7 +198,7 @@ Mantle AI Trader currently demonstrates:
 
 - Mantle Sepolia credit deposits and on-chain credit consumption.
 - Wallet-authenticated, credit-gated Gemini analysis.
-- Explainable `1H / 1D` indicator reasoning.
+- Explainable strategy-aware multi-timeframe indicator reasoning.
 - Read-only Mantle mainnet DEX aggregation and direct contract quotes.
 - On-chain signal receipts through `TradeSignalRegistry`.
 - A foundation for future user-confirmed swaps, verifiable strategy performance, recurring AI agents, and a strategy marketplace.

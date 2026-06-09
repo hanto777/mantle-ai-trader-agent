@@ -97,6 +97,33 @@ class TestConfidenceNormalization(unittest.TestCase):
         with self.assertRaises(ValueError):
             app.normalize_confidence(-0.1)
 
+    def test_extract_gemini_json_prefers_structured_response(self):
+        response = unittest.mock.MagicMock()
+        response.parsed = {"action": "HOLD", "confidence": 0.7}
+        response.text = "not used"
+
+        result = app.extract_gemini_json(response)
+
+        self.assertEqual(result["action"], "HOLD")
+
+    def test_extract_gemini_json_uses_text_fallback(self):
+        response = unittest.mock.MagicMock()
+        response.parsed = None
+        response.text = '```json\\n{"action":"SELL","confidence":0.8}\\n```'
+
+        result = app.extract_gemini_json(response)
+
+        self.assertEqual(result["action"], "SELL")
+
+    def test_extract_gemini_json_rejects_empty_response(self):
+        response = unittest.mock.MagicMock()
+        response.parsed = None
+        response.text = None
+        response.candidates = []
+
+        with self.assertRaisesRegex(ValueError, "finish reason"):
+            app.extract_gemini_json(response)
+
 
 class TestMarketCatalog(unittest.TestCase):
     def setUp(self):
@@ -170,6 +197,73 @@ class TestMarketCatalog(unittest.TestCase):
         with self.assertRaises(ValueError):
             app.normalize_gemini_response(response)
 
+    def test_normalize_gemini_response_accepts_lowercase_sell(self):
+        response = {
+            "action": "sell",
+            "support_price": 0.90,
+            "resistance_price": 1.05,
+            "confidence": 0.8,
+            "reason": "Bearish confirmation",
+        }
+
+        result = app.normalize_gemini_response(response)
+
+        self.assertEqual(result["action"], "SELL")
+
+    def test_sell_quality_gate_accepts_confirmed_bearish_setup(self):
+        analysis = {"action": "SELL", "confidence": 0.82, "reason": "Bearish setup"}
+        indicators = {
+            "1h": {"macd_state": "bearish", "rsi_state": "neutral", "stochastic_state": "neutral"},
+            "1d": {"macd_state": "bearish", "rsi_state": "neutral", "stochastic_state": "overbought"},
+        }
+
+        result = app.apply_signal_quality_gate(analysis, indicators)
+
+        self.assertEqual(result["action"], "SELL")
+
+    def test_sell_quality_gate_downgrades_unconfirmed_sell(self):
+        analysis = {"action": "SELL", "confidence": 0.82, "reason": "Possible rejection"}
+        indicators = {
+            "1h": {"macd_state": "bullish", "rsi_state": "neutral", "stochastic_state": "neutral"},
+            "1d": {"macd_state": "bearish", "rsi_state": "neutral", "stochastic_state": "neutral"},
+        }
+
+        result = app.apply_signal_quality_gate(analysis, indicators)
+
+        self.assertEqual(result["action"], "HOLD")
+        self.assertIn("1H MACD", result["reason"])
+
+    def test_sell_quality_gate_avoids_oversold_exhaustion(self):
+        analysis = {"action": "SELL", "confidence": 0.90, "reason": "Strong decline"}
+        indicators = {
+            "1h": {"macd_state": "bearish", "rsi_state": "oversold", "stochastic_state": "oversold"},
+            "1d": {"macd_state": "bearish", "rsi_state": "oversold", "stochastic_state": "oversold"},
+        }
+
+        result = app.apply_signal_quality_gate(analysis, indicators)
+
+        self.assertEqual(result["action"], "HOLD")
+        self.assertIn("oversold", result["reason"])
+
+    def test_sell_quality_gate_requires_downside_room_and_invalidation(self):
+        analysis = {
+            "action": "SELL",
+            "confidence": 0.90,
+            "support_price": 99.0,
+            "resistance_price": 99.5,
+            "reason": "Bearish momentum",
+        }
+        indicators = {
+            "1h": {"macd_state": "bearish", "rsi_state": "neutral", "stochastic_state": "neutral"},
+            "1d": {"macd_state": "bearish", "rsi_state": "neutral", "stochastic_state": "neutral"},
+        }
+
+        result = app.apply_signal_quality_gate(analysis, indicators, current_price=100.0)
+
+        self.assertEqual(result["action"], "HOLD")
+        self.assertIn("downside room", result["reason"])
+        self.assertIn("invalidation level", result["reason"])
+
 
 class TestTechnicalIndicators(unittest.TestCase):
     @staticmethod
@@ -196,6 +290,58 @@ class TestTechnicalIndicators(unittest.TestCase):
         self.assertEqual(result["stochastic_k"], 50.0)
         self.assertEqual(result["stochastic_d"], 50.0)
         self.assertEqual(result["stochastic_state"], "neutral")
+
+
+class TestAnalysisModes(unittest.TestCase):
+    def test_analysis_modes_use_expected_entry_and_trend_timeframes(self):
+        self.assertEqual(app.ANALYSIS_MODES["scalping"]["entry"], "15m")
+        self.assertEqual(app.ANALYSIS_MODES["scalping"]["trend"], "1h")
+        self.assertEqual(app.ANALYSIS_MODES["intraday"]["entry"], "1h")
+        self.assertEqual(app.ANALYSIS_MODES["intraday"]["trend"], "4h")
+        self.assertEqual(app.ANALYSIS_MODES["swing"]["entry"], "4h")
+        self.assertEqual(app.ANALYSIS_MODES["swing"]["trend"], "1d")
+        self.assertEqual(app.ANALYSIS_MODES["position"]["entry"], "1d")
+        self.assertEqual(app.ANALYSIS_MODES["position"]["trend"], "1w")
+
+    def test_supported_chart_timeframes_match_mode_entries(self):
+        self.assertEqual(app.SUPPORTED_MARKET_TIMEFRAMES, {"15m", "1h", "4h", "1d"})
+        self.assertEqual(app.MIN_ANALYSIS_CANDLES, 35)
+
+
+class TestGeminiModelFallback(unittest.IsolatedAsyncioTestCase):
+    async def test_uses_fallback_model_after_primary_rate_limit(self):
+        fallback_response = object()
+        with patch.object(
+            app,
+            "_generate_content_with_retry",
+            side_effect=[app.HTTPException(status_code=429, detail="limited"), fallback_response],
+        ) as generate:
+            response, model = await app.generate_gemini_with_model_fallback(
+                object(),
+                "gemini-primary",
+                "gemini-fallback",
+                ["prompt"],
+            )
+
+        self.assertIs(response, fallback_response)
+        self.assertEqual(model, "gemini-fallback")
+        self.assertEqual(generate.await_count, 2)
+
+    async def test_does_not_fallback_for_non_transient_error(self):
+        with patch.object(
+            app,
+            "_generate_content_with_retry",
+            side_effect=app.HTTPException(status_code=502, detail="bad request"),
+        ) as generate:
+            with self.assertRaises(app.HTTPException):
+                await app.generate_gemini_with_model_fallback(
+                    object(),
+                    "gemini-primary",
+                    "gemini-fallback",
+                    ["prompt"],
+                )
+
+        self.assertEqual(generate.await_count, 1)
 
 
 class TestPaperTrading(unittest.IsolatedAsyncioTestCase):

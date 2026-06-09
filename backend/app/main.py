@@ -112,7 +112,7 @@ class AgentStatusResponse(BaseModel):
 
 
 class AIResponseModel(BaseModel):
-    action: Literal["BUY", "HOLD"]
+    action: Literal["BUY", "SELL", "HOLD"]
     support_price: float = Field(..., gt=0)
     resistance_price: float = Field(..., gt=0)
     confidence: float = Field(..., ge=0.0, le=1.0)
@@ -122,6 +122,7 @@ class AIResponseModel(BaseModel):
 
 class AnalyzeRequest(BaseModel):
     symbol: str
+    analysis_mode: Literal["scalping", "intraday", "swing", "position"] = "intraday"
     wallet_address: str
     signature: str
     nonce: str
@@ -137,6 +138,14 @@ MARKET_CATALOG_TTL_SECONDS = 15 * 60
 market_catalog_cache: dict = {"stored_at": 0.0, "markets": [], "exchange": "Bybit Spot", "source": "bybit"}
 MARKET_SYMBOL_PATTERN = re.compile(r"^[A-Z0-9]{2,20}/USDT$")
 LEVERAGED_TOKEN_SUFFIXES = ("3L", "3S", "5L", "5S", "UP", "DOWN", "BULL", "BEAR")
+ANALYSIS_MODES = {
+    "scalping": {"entry": "15m", "trend": "1h", "label": "Scalping"},
+    "intraday": {"entry": "1h", "trend": "4h", "label": "Intraday"},
+    "swing": {"entry": "4h", "trend": "1d", "label": "Swing"},
+    "position": {"entry": "1d", "trend": "1w", "label": "Position"},
+}
+SUPPORTED_MARKET_TIMEFRAMES = {mode["entry"] for mode in ANALYSIS_MODES.values()}
+MIN_ANALYSIS_CANDLES = 35
 
 ANALYSIS_CREDIT_VAULT_ABI = [
     {
@@ -278,12 +287,60 @@ def normalize_confidence(value: float) -> float:
 
 def normalize_gemini_response(parsed: dict) -> dict:
     """Normalize Gemini response before Pydantic validation."""
+    if "action" in parsed and isinstance(parsed["action"], str):
+        parsed["action"] = parsed["action"].strip().upper()
     if "confidence" in parsed and isinstance(parsed["confidence"], (int, float)):
         try:
             parsed["confidence"] = normalize_confidence(parsed["confidence"])
         except ValueError as e:
             raise ValueError(f"Invalid confidence in Gemini response: {e}")
     return parsed
+
+
+def apply_signal_quality_gate(
+    analysis: dict,
+    indicators: dict,
+    current_price: Optional[float] = None,
+    entry_timeframe: str = "1h",
+    trend_timeframe: str = "1d",
+) -> dict:
+    """Downgrade weak SELL calls to HOLD instead of presenting an unsupported exit signal."""
+    if analysis.get("action") != "SELL":
+        return analysis
+
+    entry_indicators = indicators.get(entry_timeframe, {})
+    trend_indicators = indicators.get(trend_timeframe, {})
+    rejection_reasons = []
+    if analysis.get("confidence", 0) < 0.70:
+        rejection_reasons.append("SELL confidence is below 70%")
+    if trend_indicators.get("macd_state") != "bearish":
+        rejection_reasons.append(f"the {trend_timeframe.upper()} MACD does not confirm a bearish trend")
+    if entry_indicators.get("macd_state") != "bearish":
+        rejection_reasons.append(f"the {entry_timeframe.upper()} MACD does not confirm bearish entry timing")
+    if trend_indicators.get("rsi_state") == "oversold" and entry_indicators.get("rsi_state") == "oversold":
+        rejection_reasons.append("both timeframes are already RSI-oversold")
+    if trend_indicators.get("stochastic_state") == "oversold" and entry_indicators.get("stochastic_state") == "oversold":
+        rejection_reasons.append("both timeframes are already Stochastic-oversold")
+    if current_price:
+        support = analysis.get("support_price", 0)
+        resistance = analysis.get("resistance_price", 0)
+        if support >= current_price * 0.98:
+            rejection_reasons.append("support offers less than 2% downside room")
+        if resistance <= current_price:
+            rejection_reasons.append("resistance does not provide a valid bearish invalidation level")
+
+    if not rejection_reasons:
+        return analysis
+
+    original_reason = analysis.get("reason", "")
+    return {
+        **analysis,
+        "action": "HOLD",
+        "reason": (
+            f"SELL was not confirmed because {', '.join(rejection_reasons)}. "
+            f"The safer decision is HOLD. Original market assessment: {original_reason}"
+        ),
+    }
 
 
 def get_credit_required() -> int:
@@ -367,12 +424,13 @@ def fetch_market_catalog() -> list[dict]:
     raise RuntimeError("; ".join(errors))
 
 
-def build_analysis_auth_message(wallet_address: str, amount: int, nonce: str, symbol: str) -> str:
+def build_analysis_auth_message(wallet_address: str, amount: int, nonce: str, symbol: str, analysis_mode: str = "intraday") -> str:
     return (
         "Mantle AI Trader\n"
         "Authorize AI analysis credit spend\n"
         f"Wallet: {wallet_address}\n"
         f"Symbol: {symbol}\n"
+        f"Mode: {analysis_mode}\n"
         f"Credits: {amount}\n"
         f"Vault: {get_credit_vault_address()}\n"
         "Network: Mantle Sepolia\n"
@@ -399,7 +457,7 @@ def get_billing_contract():
     )
 
 
-def verify_analysis_signature(wallet_address: str, signature: str, nonce: str, amount: int, symbol: str, signed_message: Optional[str] = None) -> str:
+def verify_analysis_signature(wallet_address: str, signature: str, nonce: str, amount: int, symbol: str, signed_message: Optional[str] = None, analysis_mode: str = "intraday") -> str:
     if Account is None or encode_defunct is None or Web3 is None:
         raise HTTPException(status_code=500, detail="eth-account SDK not available")
 
@@ -408,10 +466,11 @@ def verify_analysis_signature(wallet_address: str, signature: str, nonce: str, a
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid wallet address")
 
-    message = signed_message or build_analysis_auth_message(checksum_wallet, amount, nonce, symbol)
+    message = signed_message or build_analysis_auth_message(checksum_wallet, amount, nonce, symbol, analysis_mode)
     expected_fields = {
         "Wallet": checksum_wallet,
         "Symbol": symbol,
+        "Mode": analysis_mode,
         "Credits": str(amount),
         "Vault": get_credit_vault_address(),
         "Network": "Mantle Sepolia",
@@ -432,6 +491,8 @@ def verify_analysis_signature(wallet_address: str, signature: str, nonce: str, a
 
     if parsed_fields.get("Symbol") != expected_fields["Symbol"]:
         raise HTTPException(status_code=401, detail="Signed symbol does not match request")
+    if parsed_fields.get("Mode") != expected_fields["Mode"]:
+        raise HTTPException(status_code=401, detail="Signed analysis mode does not match request")
     if parsed_fields.get("Credits") != expected_fields["Credits"]:
         raise HTTPException(status_code=401, detail="Signed credit amount does not match request")
     if parsed_fields.get("Nonce") != expected_fields["Nonce"]:
@@ -524,11 +585,16 @@ def _is_gemini_retryable(exc: Exception) -> bool:
     return status in (500, 503, 504)
 
 
-async def _generate_content_with_retry(client, model_name: str, contents: list) -> object:
+async def _generate_content_with_retry(client, model_name: str, contents: list, config=None) -> object:
     delays = [2, 5]
     for attempt in range(len(delays) + 1):
         try:
-            return client.models.generate_content(model=model_name, contents=contents)
+            return await run_in_threadpool(
+                client.models.generate_content,
+                model=model_name,
+                contents=contents,
+                config=config,
+            )
         except Exception as exc:
             status = _extract_gemini_status(exc)
             message = str(exc)
@@ -543,6 +609,37 @@ async def _generate_content_with_retry(client, model_name: str, contents: list) 
                 raise HTTPException(status_code=503, detail="Gemini is temporarily overloaded. Try again in a minute.")
 
             await asyncio.sleep(delays[attempt])
+
+
+async def generate_gemini_with_model_fallback(client, primary_model: str, fallback_model: str, contents: list, config=None) -> tuple[object, str]:
+    try:
+        return await _generate_content_with_retry(client, primary_model, contents, config), primary_model
+    except HTTPException as exc:
+        if exc.status_code not in (429, 503) or not fallback_model or fallback_model == primary_model:
+            raise
+        return await _generate_content_with_retry(client, fallback_model, contents, config), fallback_model
+
+
+def extract_gemini_json(response: object) -> dict:
+    parsed = getattr(response, "parsed", None)
+    if isinstance(parsed, dict):
+        return parsed
+
+    text = getattr(response, "text", None)
+    if not isinstance(text, str) or not text.strip():
+        candidates = getattr(response, "candidates", None) or []
+        finish_reason = getattr(candidates[0], "finish_reason", None) if candidates else None
+        reason = str(finish_reason) if finish_reason else "unknown"
+        raise ValueError(f"Gemini returned no JSON output (finish reason: {reason})")
+
+    try:
+        return json.loads(text)
+    except Exception:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            return json.loads(text[start:end + 1])
+        raise ValueError("No JSON found in Gemini response")
 
 
 async def fetch_candles(symbol: str, timeframe: str = "1h", limit: int = 102) -> tuple[list, str]:
@@ -618,26 +715,41 @@ def calculate_indicators(ohlcv: list) -> dict:
     }
 
 
-async def get_gemini_analysis(symbol: str, timeframe: str = "1h") -> dict:
+async def get_gemini_analysis(symbol: str, analysis_mode: str = "intraday") -> dict:
     """Fetch Gemini analysis for the symbol."""
     api_key = os.getenv("GEMINI_API_KEY")
     model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    fallback_model_name = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-2.5-flash-lite")
 
     if not api_key:
         raise HTTPException(status_code=400, detail="GEMINI_API_KEY not configured")
 
-    hourly_result, daily_result = await asyncio.gather(
-        fetch_candles(symbol, "1h", 121),
-        fetch_candles(symbol, "1d", 121),
+    mode = ANALYSIS_MODES[analysis_mode]
+    entry_timeframe = mode["entry"]
+    trend_timeframe = mode["trend"]
+    entry_result, trend_result = await asyncio.gather(
+        fetch_candles(symbol, entry_timeframe, 121),
+        fetch_candles(symbol, trend_timeframe, 121),
     )
-    ohlcv, _ = hourly_result
-    daily_ohlcv, _ = daily_result
-    if len(ohlcv) < 100 or len(daily_ohlcv) < 100:
-        raise HTTPException(status_code=502, detail="Insufficient closed 1H or 1D candles for analysis")
+    ohlcv, _ = entry_result
+    trend_ohlcv, _ = trend_result
+    insufficient = [
+        f"{timeframe.upper()} has {len(candles)}"
+        for timeframe, candles in ((entry_timeframe, ohlcv), (trend_timeframe, trend_ohlcv))
+        if len(candles) < MIN_ANALYSIS_CANDLES
+    ]
+    if insufficient:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"{symbol} does not have enough closed candle history for {mode['label']} analysis: "
+                f"{', '.join(insufficient)}; at least {MIN_ANALYSIS_CANDLES} candles are required."
+            ),
+        )
 
     indicators = {
-        "1h": calculate_indicators(ohlcv),
-        "1d": calculate_indicators(daily_ohlcv),
+        entry_timeframe: calculate_indicators(ohlcv),
+        trend_timeframe: calculate_indicators(trend_ohlcv),
     }
 
     last100 = ohlcv[-100:]
@@ -665,61 +777,78 @@ async def get_gemini_analysis(symbol: str, timeframe: str = "1h") -> dict:
 
     image_part = types.Part.from_bytes(data=image_bytes, mime_type="image/png")
     prompt = (
-        f"Analyze ONLY spot LONG scenario for {symbol}. Respond strictly with JSON only (no markdown).\n"
+        f"Analyze the spot market setup for {symbol}. Respond strictly with JSON only (no markdown).\n"
         "Use the chart together with the exact multi-timeframe indicators below. "
-        "The 1D timeframe defines the broader trend; the 1H timeframe helps time an entry. "
+        f"This is a {mode['label']} analysis. The {trend_timeframe.upper()} timeframe defines the broader trend; "
+        f"the {entry_timeframe.upper()} timeframe helps time an entry or exit. "
         "Explicitly consider whether RSI and Stochastic are overbought/oversold and whether MACD is bullish/bearish. "
-        "If 1H and 1D conflict, reduce confidence and prefer HOLD unless the long setup is clearly justified.\n"
+        "Return BUY only for a clearly confirmed bullish setup with upside room toward resistance. "
+        f"Return SELL only for a clearly confirmed bearish setup where both {trend_timeframe.upper()} and "
+        f"{entry_timeframe.upper()} support the exit, "
+        "there is downside room toward support, and the market is not already exhausted in deep oversold conditions. "
+        "SELL means reduce or exit spot exposure; it does not mean opening a short position. "
+        f"If {entry_timeframe.upper()} and {trend_timeframe.upper()} conflict or neither direction is clearly confirmed, "
+        "reduce confidence and return HOLD.\n"
         f"Indicators: {json.dumps(indicators, separators=(',', ':'))}\n"
         "Return exactly the following schema:\n"
-        "{\n  \"action\": \"BUY\" | \"HOLD\",\n  \"support_price\": number,\n  \"resistance_price\": number,\n  \"confidence\": number,\n  \"reason\": string\n}\n"
-        "The reason must clearly explain how the 1D trend, 1H setup, RSI, MACD, Stochastic, "
+        "{\n  \"action\": \"BUY\" | \"SELL\" | \"HOLD\",\n  \"support_price\": number,\n  \"resistance_price\": number,\n  \"confidence\": number,\n  \"reason\": string\n}\n"
+        f"The reason must clearly explain how the {trend_timeframe.upper()} trend, {entry_timeframe.upper()} setup, "
+        "RSI, MACD, Stochastic, "
         "support/resistance, and volume contributed to the final decision. "
         "Mention conflicts between indicators when present. Keep the explanation readable in 3-5 sentences. "
         "Provide numeric prices in the quote currency. "
         "IMPORTANT: confidence must be a decimal number from 0.0 to 1.0 (for example 0.60), NOT 60."
     )
 
+    response_schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["action", "support_price", "resistance_price", "confidence", "reason"],
+        "properties": {
+            "action": {"type": "string", "enum": ["BUY", "SELL", "HOLD"]},
+            "support_price": {"type": "number", "exclusiveMinimum": 0},
+            "resistance_price": {"type": "number", "exclusiveMinimum": 0},
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+            "reason": {"type": "string"},
+        },
+    }
+    config = types.GenerateContentConfig(
+        response_mime_type="application/json",
+        response_json_schema=response_schema,
+        temperature=0.2,
+        max_output_tokens=2048,
+        thinking_config=types.ThinkingConfig(thinking_budget=0),
+    )
+
     try:
-        response = await _generate_content_with_retry(client, model_name, [image_part, prompt])
+        response, used_model_name = await generate_gemini_with_model_fallback(
+            client,
+            model_name,
+            fallback_model_name,
+            [image_part, prompt],
+            config,
+        )
     except HTTPException:
         raise
     except Exception:
         raise HTTPException(status_code=502, detail="Failed to fetch Gemini analysis. Please try again later.")
 
-    text = None
     try:
-        if hasattr(response, "output"):
-            out = response.output
-            if isinstance(out, list) and len(out) > 0:
-                first = out[0]
-                if hasattr(first, "content") and isinstance(first.content, list) and len(first.content) > 0:
-                    c = first.content[0]
-                    if hasattr(c, "text"):
-                        text = c.text
-        if text is None:
-            text = str(response)
-    except Exception:
-        text = str(response)
-
-    try:
-        parsed = None
-        try:
-            parsed = json.loads(text)
-        except Exception:
-            start = text.find("{")
-            end = text.rfind("}")
-            if start != -1 and end != -1 and end > start:
-                parsed = json.loads(text[start:end+1])
-
-        if parsed is None:
-            raise ValueError("No JSON found in model response")
-
+        parsed = extract_gemini_json(response)
         parsed = normalize_gemini_response(parsed)
         ai = AIResponseModel.parse_obj(parsed)
         result = ai.dict()
         result["indicators"] = indicators
-        return result
+        result["analysis_mode"] = analysis_mode
+        result["symbol"] = symbol
+        result["model"] = used_model_name
+        result["entry_timeframe"] = entry_timeframe
+        result["trend_timeframe"] = trend_timeframe
+        result["timeframe_candle_counts"] = {
+            entry_timeframe: len(ohlcv),
+            trend_timeframe: len(trend_ohlcv),
+        }
+        return apply_signal_quality_gate(result, indicators, float(ohlcv[-1][4]), entry_timeframe, trend_timeframe)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Failed to parse Gemini response: {exc}")
 
@@ -894,9 +1023,12 @@ async def health():
 
 
 @app.get("/api/market/candles")
-async def get_market_candles(symbol: str = Query(default="MNT/USDT")):
+async def get_market_candles(symbol: str = Query(default="MNT/USDT"), timeframe: str = Query(default="1h")):
     symbol = normalize_symbol(symbol)
-    ohlcv, source = await fetch_candles(symbol, "1h", 102)
+    timeframe = timeframe.lower()
+    if timeframe not in SUPPORTED_MARKET_TIMEFRAMES:
+        raise HTTPException(status_code=400, detail="Unsupported market chart timeframe")
+    ohlcv, source = await fetch_candles(symbol, timeframe, 102)
     
     closed_candles = ohlcv
     candles = [
@@ -916,7 +1048,7 @@ async def get_market_candles(symbol: str = Query(default="MNT/USDT")):
         "symbol": symbol,
         "exchange": display_name,
         "source": source,
-        "timeframe": "1H",
+        "timeframe": timeframe.upper(),
         "candles": candles,
     }
 
@@ -1016,13 +1148,14 @@ async def ai_analyze(request: AnalyzeRequest):
         credit_amount,
         symbol,
         request.message,
+        request.analysis_mode,
     )
     await run_in_threadpool(assert_billing_can_consume)
     balance = await run_in_threadpool(get_credit_balance, wallet_address)
     if balance < credit_amount:
         raise HTTPException(status_code=402, detail="Insufficient AI credits")
 
-    analysis = await get_gemini_analysis(symbol)
+    analysis = await get_gemini_analysis(symbol, request.analysis_mode)
     consume_tx_hash = await run_in_threadpool(consume_analysis_credit, wallet_address, credit_amount)
     used_billing_nonces.add(request.nonce)
     analysis["credits_consumed"] = credit_amount

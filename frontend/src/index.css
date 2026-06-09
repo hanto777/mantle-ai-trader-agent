@@ -302,6 +302,7 @@ button {
 .brand-orb { width: 42px; height: 42px; border-radius: 14px; }
 .asset-dot { width: 34px; height: 34px; border-radius: 999px; }
 .brain-chip { width: 40px; height: 40px; border-radius: 14px; color: #d8ccff; background: rgba(124, 92, 255, 0.16); }
+.brand-home { border: 0; padding: 0; background: transparent; text-align: left; cursor: pointer; }
 
 .nav-pill,
 .status-pill,
@@ -316,13 +317,48 @@ button {
   background: rgba(15, 23, 42, 0.74);
 }
 
-.nav-pill { padding: 8px 12px; color: #94a3b8; }
-.nav-pill.active { background: rgba(255,255,255,0.07); color: #fff; }
+.nav-pill { padding: 8px 12px; color: #94a3b8; cursor: pointer; transition: border-color .2s ease, background .2s ease, color .2s ease; }
+.nav-pill:hover { border-color: rgba(103, 232, 249, .35); color: #e2e8f0; }
+.nav-pill.active { border-color: rgba(103, 232, 249, .28); background: rgba(255,255,255,0.07); color: #fff; }
 .status-pill { padding: 8px 12px; font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; color: #b8c7e6; }
 .mini-badge { padding: 4px 9px; font: 700 10px ui-monospace, SFMono-Regular, Menlo, monospace; text-transform: uppercase; letter-spacing: .08em; color: #94a3b8; }
 .mini-badge.live { border-color: rgba(34, 211, 238, .45); color: #67e8f9; background: rgba(34, 211, 238, .1); }
 .mini-badge.violet { border-color: rgba(139, 92, 246, .45); color: #c4b5fd; background: rgba(139, 92, 246, .12); }
 .mini-badge.amber { border-color: rgba(245, 158, 11, .45); color: #facc15; background: rgba(245, 158, 11, .1); }
+
+.timeframe-selector {
+  position: relative;
+  display: inline-flex;
+}
+
+.timeframe-selector::after {
+  content: '▾';
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  pointer-events: none;
+  translate: 0 -54%;
+  color: #67e8f9;
+  font-size: 9px;
+}
+
+.timeframe-selector select {
+  appearance: none;
+  border: 1px solid rgba(148, 163, 184, .2);
+  border-radius: 999px;
+  padding: 4px 23px 4px 9px;
+  outline: 0;
+  background: rgba(15, 23, 42, .74);
+  color: #94a3b8;
+  cursor: pointer;
+  font: 700 10px ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+}
+
+.timeframe-selector select:hover,
+.timeframe-selector select:focus { border-color: rgba(103, 232, 249, .48); color: #e2e8f0; }
+.timeframe-selector select:disabled { cursor: wait; opacity: .55; }
 
 .market-selector {
   position: relative;
@@ -686,6 +722,7 @@ button {
 .signal-output { border: 1px solid rgba(34, 211, 238, .34); border-radius: 14px; background: linear-gradient(135deg, rgba(34, 211, 238, .1), rgba(139, 92, 246, .08)); }
 .signal-pill { padding: 4px 10px; font: 800 10px ui-monospace, SFMono-Regular, Menlo, monospace; text-transform: uppercase; }
 .signal-pill.buy { border-color: rgba(52, 211, 153, .55); color: #34d399; background: rgba(52, 211, 153, .12); }
+.signal-pill.sell { border-color: rgba(248, 113, 113, .55); color: #f87171; background: rgba(248, 113, 113, .12); }
 .signal-pill.hold { border-color: rgba(250, 204, 21, .48); color: #facc15; background: rgba(250, 204, 21, .1); }
 .signal-pill.stale { border-color: rgba(250, 204, 21, .48); color: #fde68a; background: rgba(250, 204, 21, .09); }
 .verified-badge { padding: 7px 11px; font-size: 12px; color: #34d399; border-color: rgba(52, 211, 153, .36); background: rgba(52, 211, 153, .08); }
@@ -1201,6 +1238,14 @@ button {
 
 .allocation-legend-row span { color: #94a3b8; font-size: 12px; }
 .allocation-legend-row strong { color: #e2e8f0; font-size: 12px; }
+
+.performance-hero {
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 82% 20%, rgba(34, 211, 238, .16), transparent 32%),
+    radial-gradient(circle at 18% 120%, rgba(139, 92, 246, .18), transparent 42%),
+    linear-gradient(180deg, rgba(25, 35, 65, 0.66), rgba(10, 19, 39, 0.78));
+}
 
 /* Demo readability: keep the terminal dense, but legible on laptops and projectors. */
 .terminal-shell .text-\[9px\] { font-size: 10px !important; }

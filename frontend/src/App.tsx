@@ -20,17 +20,33 @@ const FEATURED_MARKETS = [
 
 const MARKET_SOURCE_LABEL = 'Live Spot Market'
 
+type AnalysisMode = 'scalping' | 'intraday' | 'swing' | 'position'
+
+const ANALYSIS_MODES: Record<AnalysisMode, { label: string; entry: string; trend: string; description: string }> = {
+  scalping: { label: 'Scalping', entry: '15m', trend: '1h', description: 'Fast entries with hourly trend confirmation' },
+  intraday: { label: 'Intraday', entry: '1h', trend: '4h', description: 'Same-day setups with broader session context' },
+  swing: { label: 'Swing', entry: '4h', trend: '1d', description: 'Multi-day setups filtered by the daily trend' },
+  position: { label: 'Position', entry: '1d', trend: '1w', description: 'Long-horizon decisions with weekly context' },
+}
+
+const ANALYSIS_MODE_BY_ENTRY: Record<string, AnalysisMode> = {
+  '15m': 'scalping',
+  '1h': 'intraday',
+  '4h': 'swing',
+  '1d': 'position',
+}
+
 const ANALYSIS_METHODS = [
   { label: '1H candle structure', value: 'Reading trend direction, swing highs, swing lows, and reversal candles', tone: 'cyan' },
-  { label: '1D trend filter', value: 'Checking the broader daily market direction before allowing a long setup', tone: 'violet' },
+  { label: '1D trend filter', value: 'Checking the broader daily market direction before allowing a directional setup', tone: 'violet' },
   { label: 'Support mapping', value: 'Locating demand zones and the nearest invalidation level', tone: 'cyan' },
   { label: 'Resistance mapping', value: 'Locating rejection zones and realistic upside targets', tone: 'amber' },
   { label: 'Volume context', value: 'Comparing price movement with visible trading volume', tone: 'cyan' },
-  { label: 'RSI 1H / 1D', value: 'Checking momentum and overbought or oversold conditions on both timeframes', tone: 'violet' },
-  { label: 'MACD 1H / 1D', value: 'Comparing trend momentum, signal lines, and histogram direction', tone: 'violet' },
-  { label: 'Stochastic 1H / 1D', value: 'Checking where momentum points and whether the asset is overbought or oversold', tone: 'amber' },
+  { label: 'RSI entry / trend', value: 'Checking momentum and overbought or oversold conditions on both timeframes', tone: 'violet' },
+  { label: 'MACD entry / trend', value: 'Comparing trend momentum, signal lines, and histogram direction', tone: 'violet' },
+  { label: 'Stochastic entry / trend', value: 'Checking where momentum points and whether the asset is overbought or oversold', tone: 'amber' },
   { label: 'Timeframe synthesis', value: 'Resolving conflicts between short-term entry timing and the daily trend', tone: 'cyan' },
-  { label: 'Final decision', value: 'Combining every signal into BUY or HOLD with a confidence score', tone: 'green' },
+  { label: 'Final decision', value: 'Combining every signal into BUY, SELL, or HOLD with a confidence score', tone: 'green' },
 ] as const
 
 const PORTFOLIO_CATALOG = [
@@ -72,7 +88,7 @@ type MarketCatalogItem = {
 }
 
 type AIResult = {
-  action: 'BUY' | 'HOLD'
+  action: 'BUY' | 'SELL' | 'HOLD'
   support_price: number
   resistance_price: number
   confidence: number
@@ -84,7 +100,10 @@ type AIResult = {
   warning?: string
   credits_consumed?: number
   credit_consume_tx_hash?: string
-  indicators?: Record<'1h' | '1d', {
+  analysis_mode?: AnalysisMode
+  entry_timeframe?: string
+  trend_timeframe?: string
+  indicators?: Record<string, {
     rsi: number
     rsi_state: string
     macd: number
@@ -198,8 +217,14 @@ function formatSignedCurrency(value: number) {
   return `${value >= 0 ? '+' : '-'}${formatCurrency(Math.abs(value))}`
 }
 
+function signalClass(action?: string) {
+  return action === 'BUY' ? 'buy' : action === 'SELL' ? 'sell' : 'hold'
+}
+
 function App() {
   const chartContainerRef = useRef<HTMLDivElement | null>(null)
+  const [activeView, setActiveView] = useState<'terminal' | 'performance' | 'portfolio'>('terminal')
+  const [analysisMode, setAnalysisMode] = useState<AnalysisMode>('intraday')
   const [selectedSymbol, setSelectedSymbol] = useState('MNT/USDT')
   const [marketCatalog, setMarketCatalog] = useState<MarketCatalogItem[]>(
     FEATURED_MARKETS.map((market) => ({ symbol: market.symbol, base: market.label, quote: 'USDT', exchange: MARKET_SOURCE_LABEL }))
@@ -309,7 +334,7 @@ function App() {
     setError(null)
 
     try {
-      const response = await fetch(`${marketApiBase}/api/market/candles?symbol=${encodeURIComponent(selectedSymbol)}`)
+      const response = await fetch(`${marketApiBase}/api/market/candles?symbol=${encodeURIComponent(selectedSymbol)}&timeframe=${ANALYSIS_MODES[analysisMode].entry}`)
       if (!response.ok) {
         const text = await response.text()
         throw new Error(text || 'Failed to fetch candles')
@@ -360,27 +385,6 @@ function App() {
       }
       const data = (await response.json()) as AgentStatusResponse
       setAccount(data.account)
-      // If server has a last successful analysis, use it to populate UI
-      if (data.account?.last_analysis) {
-        const la = data.account.last_analysis as any
-        setAiResult({
-          action: la.action,
-          support_price: la.support_price,
-          resistance_price: la.resistance_price,
-          confidence: la.confidence,
-          reason: la.reason,
-          analyzed_at: la.analyzed_at,
-          model: la.model,
-          candles_last_timestamp: la.candles_last_timestamp,
-          stale: false,
-          indicators: la.indicators,
-        })
-        if (la.analyzed_at) {
-          setAiTime(new Date(la.analyzed_at).toLocaleString())
-        } else if (la.candles_last_timestamp) {
-          setAiTime(new Date(la.candles_last_timestamp).toLocaleString())
-        }
-      }
     } catch (err: any) {
       setStatusError(err?.message || 'Failed to load agent status')
     } finally {
@@ -411,7 +415,7 @@ function App() {
     setAiError(null)
     refreshAll()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedSymbol])
+  }, [selectedSymbol, analysisMode])
 
   useEffect(() => {
     if (!chartContainerRef.current) return
@@ -536,6 +540,10 @@ function App() {
       return 'Wallet signature does not match the connected wallet. Reconnect wallet and try again.'
     }
 
+    if (message.includes('Analysis timeframe mismatch')) {
+      return 'The analysis backend returned different timeframes. Refresh the page and run the selected timeframe again.'
+    }
+
     if (message.includes('Gemini request limit') || message.includes('Достигнут лимит запросов Gemini') || message.includes('429')) {
       return 'Gemini request limit reached. Please try again later.'
     }
@@ -658,6 +666,7 @@ function App() {
         'Authorize AI analysis credit spend',
         `Wallet: ${checksumWallet}`,
         `Symbol: ${selectedSymbol}`,
+        `Mode: ${analysisMode}`,
         `Credits: ${creditsRequired}`,
         `Vault: ${ANALYSIS_CREDIT_VAULT_ADDRESS}`,
         'Network: Mantle Sepolia',
@@ -670,6 +679,7 @@ function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           symbol: selectedSymbol,
+          analysis_mode: analysisMode,
           wallet_address: checksumWallet,
           signature,
           nonce,
@@ -681,6 +691,15 @@ function App() {
         throw new Error(txt || 'AI analyze failed')
       }
       const data = (await res.json()) as AIResult
+      const expectedMode = ANALYSIS_MODES[analysisMode]
+      if (
+        data.entry_timeframe !== expectedMode.entry ||
+        data.trend_timeframe !== expectedMode.trend
+      ) {
+        throw new Error(
+          `Analysis timeframe mismatch: expected ${expectedMode.entry.toUpperCase()} + ${expectedMode.trend.toUpperCase()}, received ${(data.entry_timeframe || 'unknown').toUpperCase()} + ${(data.trend_timeframe || 'unknown').toUpperCase()}.`
+        )
+      }
       setAiResult(data)
       if ((data as any).analyzed_at) {
         setAiTime(new Date((data as any).analyzed_at).toLocaleString())
@@ -1053,8 +1072,18 @@ function App() {
   const confidencePercent = aiResult ? Math.round(aiResult.confidence * 100) : 0
   const supportLevel = aiResult?.support_price ?? null
   const resistanceLevel = aiResult?.resistance_price ?? null
-  const hourlyIndicators = aiResult?.indicators?.['1h']
-  const dailyIndicators = aiResult?.indicators?.['1d']
+  const selectedMode = ANALYSIS_MODES[analysisMode]
+  const resultIndicatorTimeframes = Object.keys(aiResult?.indicators ?? {})
+  const resultEntryTimeframe = aiResult?.entry_timeframe
+    ?? (resultIndicatorTimeframes.includes(selectedMode.entry) ? selectedMode.entry : resultIndicatorTimeframes[0])
+    ?? selectedMode.entry
+  const resultTrendTimeframe = aiResult?.trend_timeframe
+    ?? (resultIndicatorTimeframes.includes(selectedMode.trend)
+      ? selectedMode.trend
+      : resultIndicatorTimeframes.find((timeframe) => timeframe !== resultEntryTimeframe))
+    ?? selectedMode.trend
+  const entryIndicators = aiResult?.indicators?.[resultEntryTimeframe]
+  const trendIndicators = aiResult?.indicators?.[resultTrendTimeframe]
   const totalVolume = candles.reduce((sum, candle) => sum + candle.volume, 0)
   const firstClose = candles[0]?.close ?? latestPrice ?? 0
   const marketChange = latestPrice && firstClose ? ((latestPrice - firstClose) / firstClose) * 100 : 0
@@ -1151,18 +1180,18 @@ function App() {
       <div className="starfield" />
       <header className="terminal-topbar relative z-10 flex flex-col gap-4 border-b border-cyan-400/20 px-4 py-4 backdrop-blur-xl lg:flex-row lg:items-center lg:justify-between lg:px-8">
         <div className="flex items-center gap-8">
-          <div className="flex items-center gap-3">
+          <button type="button" className="brand-home flex items-center gap-3" onClick={() => setActiveView('terminal')}>
             <div className="brand-orb">M</div>
             <div>
               <div className="text-sm font-semibold tracking-tight text-white">Mantle AI Trader</div>
               <div className="font-mono text-[10px] uppercase tracking-[0.24em] text-slate-400">Signal Intelligence v0.5</div>
             </div>
-          </div>
-          <nav className="hidden items-center gap-2 text-sm md:flex">
-            <span className="nav-pill active">Terminal</span>
-            <span className="nav-pill">Signals</span>
-            <span className="nav-pill">Vaults</span>
-            <span className="nav-pill">Docs</span>
+          </button>
+          <nav className="flex flex-wrap items-center gap-2 text-sm">
+            <button type="button" onClick={() => setActiveView('terminal')} className={`nav-pill ${activeView === 'terminal' ? 'active' : ''}`}>Terminal</button>
+            <button type="button" onClick={() => setActiveView('performance')} className={`nav-pill ${activeView === 'performance' ? 'active' : ''}`}>AI Performance</button>
+            <button type="button" onClick={() => setActiveView('portfolio')} className={`nav-pill ${activeView === 'portfolio' ? 'active' : ''}`}>Portfolio</button>
+            <a className="nav-pill" href="https://github.com/hanto777/mantle-ai-trader-agent#readme" target="_blank" rel="noreferrer">Docs</a>
           </nav>
         </div>
 
@@ -1271,7 +1300,7 @@ function App() {
       )}
 
       <main className="relative z-10 mx-auto max-w-[1500px] space-y-6 px-4 py-6 lg:px-8">
-        <section className="market-workspace grid gap-6 xl:grid-cols-[0.95fr_1.45fr]">
+        <section className={`${activeView === 'terminal' ? 'grid' : 'hidden'} market-workspace gap-6 xl:grid-cols-[0.95fr_1.45fr]`}>
           <div className="market-left-panel glass-panel p-4">
             <div className="mb-3 flex items-start justify-between gap-4">
               <div>
@@ -1309,7 +1338,19 @@ function App() {
                     )}
                   </div>
                   <span className="mini-badge">{marketInfo.exchange}</span>
-                  <span className="mini-badge">{marketInfo.timeframe}</span>
+                  <label className="timeframe-selector">
+                    <span className="sr-only">Analysis timeframe</span>
+                    <select
+                      value={selectedMode.entry}
+                      onChange={(event) => setAnalysisMode(ANALYSIS_MODE_BY_ENTRY[event.target.value])}
+                      disabled={aiLoading}
+                      aria-label="Analysis timeframe"
+                    >
+                      {(Object.entries(ANALYSIS_MODES) as [AnalysisMode, typeof selectedMode][]).map(([mode, config]) => (
+                        <option key={mode} value={config.entry}>{config.entry.toUpperCase()}</option>
+                      ))}
+                    </select>
+                  </label>
                 </div>
                 <div className="mt-2 flex items-baseline gap-3">
                   <span className="font-mono text-2xl font-semibold text-white">
@@ -1338,9 +1379,9 @@ function App() {
             )}
 
             <div className="market-stat-grid mt-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
-              <div className="stat-tile"><span>24h high</span><strong>{latestHigh ? `$${latestHigh.toFixed(4)}` : '-'}</strong></div>
-              <div className="stat-tile"><span>24h low</span><strong>{latestLow ? `$${latestLow.toFixed(4)}` : '-'}</strong></div>
-              <div className="stat-tile"><span>Volume</span><strong>{Math.round(totalVolume).toLocaleString()}</strong></div>
+              <div className="stat-tile"><span>Chart high</span><strong>{latestHigh ? `$${latestHigh.toFixed(4)}` : '-'}</strong></div>
+              <div className="stat-tile"><span>Chart low</span><strong>{latestLow ? `$${latestLow.toFixed(4)}` : '-'}</strong></div>
+              <div className="stat-tile"><span>Chart volume</span><strong>{Math.round(totalVolume).toLocaleString()}</strong></div>
               <div className="stat-tile"><span>Source</span><strong>{marketInfo.exchange || '-'}</strong></div>
             </div>
 
@@ -1549,7 +1590,7 @@ function App() {
             <div className="ai-action-dock mt-3">
               <div>
                 <div className="font-mono text-[9px] uppercase tracking-[0.18em] text-cyan-300">{aiLoading ? 'Analysis in progress' : aiResult ? 'Run another analysis' : 'Ready for analysis'}</div>
-                <div className="mt-1 text-xs text-slate-400">{creditsRequired} credit · 1H + 1D · RSI · MACD · Stochastic</div>
+                <div className="mt-1 text-xs text-slate-400">{creditsRequired} credit · {selectedMode.entry.toUpperCase()} + {selectedMode.trend.toUpperCase()}</div>
               </div>
               <div className="flex gap-2">
                 {aiResult && (
@@ -1570,13 +1611,13 @@ function App() {
                     <div className="font-mono text-[10px] uppercase tracking-[0.22em] text-cyan-300">Gemini decision explanation</div>
                     <h3 className="mt-2 text-lg font-semibold text-white">Why the agent chose {aiResult.action}</h3>
                   </div>
-                  <div className={`signal-pill ${aiResult.action === 'BUY' ? 'buy' : 'hold'}`}>{confidencePercent}% confidence</div>
+                  <div className={`signal-pill ${signalClass(aiResult.action)}`}>{confidencePercent}% confidence</div>
                 </div>
                 <p className="mt-4 text-sm leading-7 text-slate-200">{aiResult.reason}</p>
                 <div className="mt-4 grid gap-3 sm:grid-cols-3">
-                  <div className="explanation-fact"><span>Timeframes</span><strong>1H entry + 1D trend</strong></div>
-                  <div className="explanation-fact"><span>Risk boundary</span><strong>{supportLevel ? `$${supportLevel.toFixed(6)}` : '-'}</strong></div>
-                  <div className="explanation-fact"><span>Upside reference</span><strong>{resistanceLevel ? `$${resistanceLevel.toFixed(6)}` : '-'}</strong></div>
+                  <div className="explanation-fact"><span>Timeframes</span><strong>{resultEntryTimeframe.toUpperCase()} entry + {resultTrendTimeframe.toUpperCase()} trend</strong></div>
+                  <div className="explanation-fact"><span>{aiResult.action === 'SELL' ? 'Downside target' : 'Risk boundary'}</span><strong>{supportLevel ? `$${supportLevel.toFixed(6)}` : '-'}</strong></div>
+                  <div className="explanation-fact"><span>{aiResult.action === 'SELL' ? 'Bearish invalidation' : 'Upside reference'}</span><strong>{resistanceLevel ? `$${resistanceLevel.toFixed(6)}` : '-'}</strong></div>
                 </div>
               </div>
             ) : (
@@ -1603,69 +1644,58 @@ function App() {
             )}
 
             {(aiResult || aiError) && <div className="signal-output mt-5 p-4">
-              <div className="flex items-center justify-between gap-4">
-                <div className="flex items-center gap-2">
-                  <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-slate-400">Signal</span>
-                  <span className={`signal-pill ${aiResult?.action === 'BUY' ? 'buy' : 'hold'}`}>{aiResult?.action || 'WAIT'}</span>
-                  {aiResult?.stale && <span className="signal-pill stale">Cached</span>}
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <div className="font-mono text-[10px] uppercase tracking-[0.2em] text-cyan-200">Multi-Timeframe Evidence</div>
+                  <p className="mt-1 text-xs text-slate-400">{selectedMode.label} evidence from the entry and trend-filter timeframes.</p>
                 </div>
-                <div className="font-mono text-[10px] text-slate-400">Confidence <span className="text-white">{aiResult ? `${confidencePercent}%` : '-'}</span></div>
+                <div className="flex flex-wrap gap-2">
+                  <span className="mini-badge violet">{resultEntryTimeframe.toUpperCase()} + {resultTrendTimeframe.toUpperCase()}</span>
+                  {aiResult?.model && <span className="mini-badge">{aiResult.model}</span>}
+                </div>
               </div>
-              <div className="mt-3 h-1 rounded-full bg-white/5">
-                <div className="h-full rounded-full bg-gradient-to-r from-emerald-400 to-cyan-300" style={{ width: `${Math.min(confidencePercent || 8, 100)}%` }} />
-              </div>
-              <div className="mt-4 grid grid-cols-2 gap-3 font-mono text-xs">
-                <div><div className="text-[10px] uppercase text-slate-500">Support</div><div className="text-emerald-300">{supportLevel ? `$${supportLevel.toFixed(6)}` : '-'}</div></div>
-                <div><div className="text-[10px] uppercase text-slate-500">Resistance</div><div className="text-red-300">{resistanceLevel ? `$${resistanceLevel.toFixed(6)}` : '-'}</div></div>
-              </div>
-              {(hourlyIndicators || dailyIndicators) && (
+              {aiResult && (
                 <div className="indicator-grid mt-4">
                   {[
-                    { label: '1H entry timing', values: hourlyIndicators },
-                    { label: '1D trend filter', values: dailyIndicators },
-                  ].map(({ label, values }) => values && (
+                    { label: `${resultEntryTimeframe.toUpperCase()} entry timing`, values: entryIndicators },
+                    { label: `${resultTrendTimeframe.toUpperCase()} trend filter`, values: trendIndicators },
+                  ].map(({ label, values }) => (
                     <div key={label} className="indicator-card">
-                      <div className="mb-3 flex items-center justify-between gap-3">
-                        <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-cyan-200">{label}</span>
-                        <span className={`indicator-state ${values.stochastic_state}`}>{values.stochastic_state}</span>
-                      </div>
-                      <div className="indicator-row">
-                        <span>RSI 14</span>
-                        <strong>{values.rsi.toFixed(2)}</strong>
-                        <em className={values.rsi_state}>{values.rsi_state}</em>
-                      </div>
-                      <div className="indicator-row">
-                        <span>MACD</span>
-                        <strong>{values.macd_histogram >= 0 ? '+' : ''}{values.macd_histogram.toFixed(6)}</strong>
-                        <em className={values.macd_state}>{values.macd_state}</em>
-                      </div>
-                      <div className="indicator-row">
-                        <span>Stochastic</span>
-                        <strong>{values.stochastic_k.toFixed(1)} / {values.stochastic_d.toFixed(1)}</strong>
-                        <em className={values.stochastic_state}>{values.stochastic_state}</em>
-                      </div>
+                      {values ? <>
+                        <div className="mb-3 flex items-center justify-between gap-3">
+                          <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-cyan-200">{label}</span>
+                          <span className={`indicator-state ${values.stochastic_state}`}>{values.stochastic_state}</span>
+                        </div>
+                        <div className="indicator-row">
+                          <span>RSI 14</span>
+                          <strong>{values.rsi.toFixed(2)}</strong>
+                          <em className={values.rsi_state}>{values.rsi_state}</em>
+                        </div>
+                        <div className="indicator-row">
+                          <span>MACD</span>
+                          <strong>{values.macd_histogram >= 0 ? '+' : ''}{values.macd_histogram.toFixed(6)}</strong>
+                          <em className={values.macd_state}>{values.macd_state}</em>
+                        </div>
+                        <div className="indicator-row">
+                          <span>Stochastic</span>
+                          <strong>{values.stochastic_k.toFixed(1)} / {values.stochastic_d.toFixed(1)}</strong>
+                          <em className={values.stochastic_state}>{values.stochastic_state}</em>
+                        </div>
+                      </> : <>
+                        <div className="mb-3 font-mono text-[10px] uppercase tracking-[0.16em] text-cyan-200">{label}</div>
+                        <div className="empty-state p-4 text-center text-xs text-slate-400">Indicator evidence was not returned for this timeframe.</div>
+                      </>}
                     </div>
                   ))}
                 </div>
               )}
-              <div className="mt-4 rounded-lg border border-cyan-300/10 bg-slate-950/35 p-3">
-                <div className="mb-2 font-mono text-[10px] uppercase tracking-[0.2em] text-cyan-200">Decision trace</div>
-                <p className="text-sm leading-6 text-slate-300">
-                  {aiError
-                    ? `Analysis error: ${aiError}`
-                    : aiLoading
-                      ? 'Gemini is comparing trend, support, resistance, and volume. The credit will be consumed only if a valid analysis comes back.'
-                      : aiResult?.reason || 'Press Analyze Now to send the current chart to Gemini and receive an explainable trading signal.'}
-                </p>
-                {aiResult?.credits_consumed ? (
-                  <p className="mt-2 font-mono text-[10px] text-emerald-300">Consumed {aiResult.credits_consumed} AI credit on Mantle Sepolia.</p>
-                ) : null}
-                {aiResult?.credit_consume_tx_hash ? (
-                  <a href={`https://sepolia.mantlescan.xyz/tx/${aiResult.credit_consume_tx_hash}`} target="_blank" rel="noreferrer" className="mt-1 block truncate font-mono text-[10px] text-cyan-300 underline">
-                    Credit tx: {aiResult.credit_consume_tx_hash}
-                  </a>
-                ) : null}
-              </div>
+              {aiError && <div className="alert-card mt-4 p-3 text-sm text-red-200">Analysis error: {aiError}</div>}
+              {aiResult?.credits_consumed ? <p className="mt-4 font-mono text-[10px] text-emerald-300">Consumed {aiResult.credits_consumed} AI credit on Mantle Sepolia.</p> : null}
+              {aiResult?.credit_consume_tx_hash ? (
+                <a href={`https://sepolia.mantlescan.xyz/tx/${aiResult.credit_consume_tx_hash}`} target="_blank" rel="noreferrer" className="mt-1 block truncate font-mono text-[10px] text-cyan-300 underline">
+                  Credit tx: {aiResult.credit_consume_tx_hash}
+                </a>
+              ) : null}
               {aiTime && <p className="mt-2 font-mono text-[10px] text-slate-500">Updated: {aiTime}</p>}
               {walletAddress && (credits ?? 0) < creditsRequired && (
                 <div className="mt-3 rounded-lg border border-red-400/30 bg-red-500/10 p-3 text-xs text-red-200">
@@ -1676,7 +1706,18 @@ function App() {
           </div>
         </section>
 
-        <section className="grid gap-6 lg:grid-cols-2">
+        <section className={activeView === 'performance' ? 'performance-view space-y-6' : 'hidden'}>
+          <div className="glass-panel performance-hero p-6">
+            <span className="mini-badge live">Verifiable intelligence</span>
+            <h2 className="mt-4 text-3xl font-semibold text-white">AI Performance</h2>
+            <p className="mt-3 max-w-3xl text-sm text-slate-300">A transparent alternative to anonymous signal channels. Every completed BUY and SELL setup will be evaluated against market data and linked to its immutable Mantle record.</p>
+          </div>
+          <div className="grid gap-3 md:grid-cols-4">
+            <div className="stat-tile"><span>Verified signals</span><strong>-</strong><small>Tracking starts with BUY / SELL</small></div>
+            <div className="stat-tile"><span>Win rate</span><strong>-</strong><small>Completed setups only</small></div>
+            <div className="stat-tile"><span>Average PnL</span><strong>-</strong><small>After evaluation window</small></div>
+            <div className="stat-tile"><span>On-chain proofs</span><strong>{signals.length}</strong><small>Mantle Sepolia records</small></div>
+          </div>
           <div className="glass-panel p-5">
             <div className="mb-4 flex items-center justify-between gap-4">
               <div>
@@ -1694,7 +1735,7 @@ function App() {
               <div className="space-y-2">
                 {displayedSignals.map((s, idx) => (
                   <div key={`${s.trader}-${idx}`} className="history-row">
-                    <span className={`signal-pill ${s.action === 'BUY' ? 'buy' : 'hold'}`}>{s.action}</span>
+                    <span className={`signal-pill ${signalClass(s.action)}`}>{s.action}</span>
                     <span>{s.symbol}</span>
                     <span>conf {s.confidence}%</span>
                     <span>${(s.price / 1e8).toFixed(6)}</span>
@@ -1705,7 +1746,14 @@ function App() {
               </div>
             )}
           </div>
+          <div className="glass-panel p-6">
+            <div className="font-mono text-[10px] uppercase tracking-[0.28em] text-cyan-200">Performance pipeline</div>
+            <h3 className="mt-2 text-xl font-semibold text-white">Verified results are coming next</h3>
+            <p className="mt-3 max-w-3xl text-sm text-slate-400">BUY and SELL decisions are now available. The next release will store evaluation windows, calculate realized outcomes, and publish directional accuracy without counting HOLD decisions as wins.</p>
+          </div>
+        </section>
 
+        <section className={activeView === 'portfolio' ? 'grid gap-6 lg:grid-cols-[0.8fr_1.4fr]' : 'hidden'}>
           <div className="glass-panel p-5">
             <div>
               <div className="font-mono text-[10px] uppercase tracking-[0.28em] text-cyan-200">Portfolio composition</div>
@@ -1731,14 +1779,11 @@ function App() {
                 </div>
               </div>
             ) : (
-              <div className="empty-state mt-5 p-6 text-center text-sm text-slate-400">
-                Add portfolio positions to display coin allocation.
-              </div>
+              <div className="empty-state mt-5 p-6 text-center text-sm text-slate-400">Add portfolio positions to display coin allocation.</div>
             )}
           </div>
-        </section>
 
-        <section className="glass-panel p-5">
+          <div className="glass-panel p-5">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
             <div>
               <div className="font-mono text-[10px] uppercase tracking-[0.28em] text-cyan-200">Manual investment portfolio</div>
@@ -1778,6 +1823,7 @@ function App() {
                 <button onClick={() => removePortfolioPosition(row.assetId)} className="ghost-button px-3 py-2 text-xs">Remove</button>
               </div>
             )) : <div className="empty-state p-6 text-center text-sm text-slate-400">Add your first position to calculate portfolio value and profit / loss.</div>}
+          </div>
           </div>
         </section>
       </main>
