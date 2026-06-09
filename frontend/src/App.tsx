@@ -18,6 +18,8 @@ const FEATURED_MARKETS = [
   { symbol: 'OP/USDT', label: 'OP', tone: 'L2 watch' },
 ]
 
+const MARKET_SOURCE_LABEL = 'Live Spot Market'
+
 const ANALYSIS_METHODS = [
   { label: '1H candle structure', value: 'Reading trend direction, swing highs, swing lows, and reversal candles', tone: 'cyan' },
   { label: '1D trend filter', value: 'Checking the broader daily market direction before allowing a long setup', tone: 'violet' },
@@ -200,14 +202,14 @@ function App() {
   const chartContainerRef = useRef<HTMLDivElement | null>(null)
   const [selectedSymbol, setSelectedSymbol] = useState('MNT/USDT')
   const [marketCatalog, setMarketCatalog] = useState<MarketCatalogItem[]>(
-    FEATURED_MARKETS.map((market) => ({ symbol: market.symbol, base: market.label, quote: 'USDT', exchange: 'Bybit Spot' }))
+    FEATURED_MARKETS.map((market) => ({ symbol: market.symbol, base: market.label, quote: 'USDT', exchange: MARKET_SOURCE_LABEL }))
   )
   const [marketSearch, setMarketSearch] = useState('')
   const [marketSelectorOpen, setMarketSelectorOpen] = useState(false)
   const [marketCatalogError, setMarketCatalogError] = useState<string | null>(null)
   const [candles, setCandles] = useState<Candle[]>([])
   const [latestPrice, setLatestPrice] = useState<number | null>(null)
-  const [marketInfo, setMarketInfo] = useState({ symbol: 'MNT/USDT', exchange: 'Loading source...', timeframe: '1H' })
+  const [marketInfo, setMarketInfo] = useState({ symbol: 'MNT/USDT', exchange: MARKET_SOURCE_LABEL, timeframe: '1H' })
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [aiLoading, setAiLoading] = useState(false)
@@ -267,7 +269,7 @@ function App() {
   const creditVaultConfigured = Boolean(ANALYSIS_CREDIT_VAULT_ADDRESS)
   const creditsRequired = billingStatus?.credit_required_for_analysis ?? ANALYSIS_CREDIT_REQUIRED
   const selectedMarket = marketCatalog.find((market) => market.symbol === selectedSymbol)
-    ?? { symbol: selectedSymbol, base: selectedSymbol.split('/')[0], quote: 'USDT', exchange: 'Bybit Spot' }
+    ?? { symbol: selectedSymbol, base: selectedSymbol.split('/')[0], quote: 'USDT', exchange: MARKET_SOURCE_LABEL }
   const filteredMarkets = useMemo(() => {
     const query = marketSearch.trim().toUpperCase()
     if (!query) return marketCatalog.slice(0, 80)
@@ -316,7 +318,7 @@ function App() {
       if (!data.candles?.length) {
         throw new Error('No candle data available')
       }
-      setMarketInfo({ symbol: data.symbol, exchange: data.exchange, timeframe: data.timeframe })
+      setMarketInfo({ symbol: data.symbol, exchange: MARKET_SOURCE_LABEL, timeframe: data.timeframe })
       setCandles(data.candles)
       setLatestPrice(data.candles[data.candles.length - 1].close)
     } catch (err: any) {
