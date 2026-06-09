@@ -135,16 +135,15 @@ The DEX quote preview never returns approval or transaction calldata and cannot 
 
 ## Supported Markets
 
-The app currently supports credit-gated AI analysis for:
+The market selector loads active Bybit spot `TOKEN/USDT` pairs and supports searchable
+single-pair analysis. The selected pair receives live candles and is sent to Gemini only
+when the user explicitly requests an analysis.
 
-- `MNT/USDT`
-- `BTC/USDT`
-- `ETH/USDT`
-- `SOL/USDT`
-- `ARB/USDT`
-- `OP/USDT`
+Each `Analyze Now` request costs `1` demo AI credit across supported Bybit USDT spot
+pairs. The signed wallet message includes the selected symbol, so the backend verifies
+both user identity and the market being analyzed before spending a credit.
 
-Each `Analyze Now` request costs `1` demo AI credit across all supported pairs. The signed wallet message includes the selected symbol, so the backend verifies both user identity and the market being analyzed before spending a credit.
+The read-only Mantle DEX route terminal remains limited to `MNT/USDT`.
 
 ## Roadmap
 

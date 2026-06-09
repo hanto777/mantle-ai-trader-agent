@@ -97,6 +97,43 @@ class TestConfidenceNormalization(unittest.TestCase):
         with self.assertRaises(ValueError):
             app.normalize_confidence(-0.1)
 
+
+class TestMarketCatalog(unittest.TestCase):
+    def setUp(self):
+        app.market_catalog_cache.update({"stored_at": 0.0, "markets": [], "exchange": "Bybit Spot", "source": "bybit"})
+
+    def test_normalize_symbol_accepts_standard_usdt_pair(self):
+        self.assertEqual(app.normalize_symbol(" aave/usdt "), "AAVE/USDT")
+
+    def test_normalize_symbol_rejects_non_usdt_pair(self):
+        with self.assertRaises(Exception):
+            app.normalize_symbol("AAVE/USDC")
+
+    def test_market_catalog_keeps_active_spot_usdt_pairs(self):
+        exchange = unittest.mock.MagicMock()
+        exchange.load_markets.return_value = {
+            "AAVE/USDT": {"symbol": "AAVE/USDT", "base": "AAVE", "quote": "USDT", "spot": True, "active": True},
+            "BTC/USDC": {"symbol": "BTC/USDC", "base": "BTC", "quote": "USDC", "spot": True, "active": True},
+            "ETH3L/USDT": {"symbol": "ETH3L/USDT", "base": "ETH3L", "quote": "USDT", "spot": True, "active": True},
+            "OLD/USDT": {"symbol": "OLD/USDT", "base": "OLD", "quote": "USDT", "spot": True, "active": False},
+        }
+        with patch.object(app, "create_spot_exchange", return_value=exchange):
+            result = app.fetch_market_catalog()
+
+        self.assertEqual([market["symbol"] for market in result], ["AAVE/USDT"])
+
+    def test_market_catalog_uses_official_bytick_before_bingx(self):
+        bytick = unittest.mock.MagicMock()
+        bytick.load_markets.return_value = {
+            "AAVE/USDT": {"symbol": "AAVE/USDT", "base": "AAVE", "quote": "USDT", "spot": True, "active": True},
+        }
+        with patch.object(app, "create_spot_exchange", side_effect=[TimeoutError("blocked"), bytick]) as create:
+            result = app.fetch_market_catalog()
+
+        self.assertEqual(result[0]["symbol"], "AAVE/USDT")
+        self.assertEqual(app.market_catalog_cache["source"], "bybit-bytick")
+        self.assertEqual(create.call_args_list[1].args, ("bybit", "bytick.com"))
+
     def test_normalize_gemini_response_with_decimal(self):
         """normalize_gemini_response should handle 0.6 correctly"""
         response = {

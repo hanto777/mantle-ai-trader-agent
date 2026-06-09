@@ -324,6 +324,96 @@ button {
 .mini-badge.violet { border-color: rgba(139, 92, 246, .45); color: #c4b5fd; background: rgba(139, 92, 246, .12); }
 .mini-badge.amber { border-color: rgba(245, 158, 11, .45); color: #facc15; background: rgba(245, 158, 11, .1); }
 
+.market-selector {
+  position: relative;
+  z-index: 30;
+}
+
+.market-selector-trigger {
+  display: grid;
+  gap: 2px;
+  min-width: 150px;
+  color: #fff;
+  text-align: left;
+}
+
+.market-selector-trigger span {
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.market-selector-trigger small {
+  color: #67e8f9;
+  font: 700 8px ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: .13em;
+  text-transform: uppercase;
+}
+
+.market-selector-popover {
+  position: absolute;
+  top: calc(100% + 10px);
+  left: -44px;
+  width: min(360px, calc(100vw - 48px));
+  overflow: hidden;
+  border: 1px solid rgba(34, 211, 238, .38);
+  border-radius: 10px;
+  padding: 10px;
+  background: rgba(2, 8, 23, .98);
+  box-shadow: 0 22px 60px rgba(0, 0, 0, .55);
+}
+
+.market-selector-popover input {
+  width: 100%;
+  border: 1px solid rgba(103, 232, 249, .25);
+  border-radius: 8px;
+  outline: 0;
+  padding: 10px 12px;
+  background: rgba(15, 23, 42, .9);
+  color: #fff;
+  font: 700 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.market-selector-results {
+  display: grid;
+  max-height: 320px;
+  margin-top: 8px;
+  overflow-y: auto;
+}
+
+.market-selector-results button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-radius: 7px;
+  padding: 9px 10px;
+  color: #e2e8f0;
+  text-align: left;
+}
+
+.market-selector-results button:hover,
+.market-selector-results button.active {
+  background: rgba(34, 211, 238, .12);
+  color: #67e8f9;
+}
+
+.market-selector-results span,
+.market-selector-empty,
+.market-selector-error {
+  color: #64748b;
+  font: 700 9px ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.market-selector-empty,
+.market-selector-error {
+  padding: 12px 10px;
+}
+
+.market-selector-error {
+  color: #fca5a5;
+}
+
 .credit-nav-card {
   display: flex;
   align-items: center;

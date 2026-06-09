@@ -7,15 +7,16 @@ import { AnalysisCreditVaultABI, ANALYSIS_CREDIT_REQUIRED, ANALYSIS_CREDIT_VAULT
 const apiBase = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000'
 const portfolioApiBase = import.meta.env.VITE_PORTFOLIO_API_BASE_URL || apiBase
 const dexApiBase = import.meta.env.VITE_DEX_API_BASE_URL || portfolioApiBase
+const marketApiBase = import.meta.env.VITE_MARKET_API_BASE_URL || portfolioApiBase
 
-const MARKETS = [
+const FEATURED_MARKETS = [
   { symbol: 'MNT/USDT', label: 'MNT', tone: 'Mantle native' },
   { symbol: 'BTC/USDT', label: 'BTC', tone: 'Macro king' },
   { symbol: 'ETH/USDT', label: 'ETH', tone: 'L1 pulse' },
   { symbol: 'SOL/USDT', label: 'SOL', tone: 'High beta' },
   { symbol: 'ARB/USDT', label: 'ARB', tone: 'L2 watch' },
   { symbol: 'OP/USDT', label: 'OP', tone: 'L2 watch' },
-] as const
+]
 
 const ANALYSIS_METHODS = [
   { label: '1H candle structure', value: 'Reading trend direction, swing highs, swing lows, and reversal candles', tone: 'cyan' },
@@ -59,6 +60,13 @@ type CandlesResponse = {
   exchange: string
   timeframe: string
   candles: Candle[]
+}
+
+type MarketCatalogItem = {
+  symbol: string
+  base: string
+  quote: string
+  exchange: string
 }
 
 type AIResult = {
@@ -191,6 +199,12 @@ function formatSignedCurrency(value: number) {
 function App() {
   const chartContainerRef = useRef<HTMLDivElement | null>(null)
   const [selectedSymbol, setSelectedSymbol] = useState('MNT/USDT')
+  const [marketCatalog, setMarketCatalog] = useState<MarketCatalogItem[]>(
+    FEATURED_MARKETS.map((market) => ({ symbol: market.symbol, base: market.label, quote: 'USDT', exchange: 'Bybit Spot' }))
+  )
+  const [marketSearch, setMarketSearch] = useState('')
+  const [marketSelectorOpen, setMarketSelectorOpen] = useState(false)
+  const [marketCatalogError, setMarketCatalogError] = useState<string | null>(null)
   const [candles, setCandles] = useState<Candle[]>([])
   const [latestPrice, setLatestPrice] = useState<number | null>(null)
   const [marketInfo, setMarketInfo] = useState({ symbol: 'MNT/USDT', exchange: 'Loading source...', timeframe: '1H' })
@@ -252,7 +266,15 @@ function App() {
 
   const creditVaultConfigured = Boolean(ANALYSIS_CREDIT_VAULT_ADDRESS)
   const creditsRequired = billingStatus?.credit_required_for_analysis ?? ANALYSIS_CREDIT_REQUIRED
-  const selectedMarket = MARKETS.find((market) => market.symbol === selectedSymbol) ?? MARKETS[0]
+  const selectedMarket = marketCatalog.find((market) => market.symbol === selectedSymbol)
+    ?? { symbol: selectedSymbol, base: selectedSymbol.split('/')[0], quote: 'USDT', exchange: 'Bybit Spot' }
+  const filteredMarkets = useMemo(() => {
+    const query = marketSearch.trim().toUpperCase()
+    if (!query) return marketCatalog.slice(0, 80)
+    return marketCatalog
+      .filter((market) => market.symbol.includes(query) || market.base.includes(query))
+      .slice(0, 80)
+  }, [marketCatalog, marketSearch])
   const displayedSignals = useMemo(
     () => (showAllSignals ? signals : signals.slice(0, 4)),
     [showAllSignals, signals]
@@ -285,7 +307,7 @@ function App() {
     setError(null)
 
     try {
-      const response = await fetch(`${apiBase}/api/market/candles?symbol=${encodeURIComponent(selectedSymbol)}`)
+      const response = await fetch(`${marketApiBase}/api/market/candles?symbol=${encodeURIComponent(selectedSymbol)}`)
       if (!response.ok) {
         const text = await response.text()
         throw new Error(text || 'Failed to fetch candles')
@@ -302,6 +324,26 @@ function App() {
     } finally {
       setLoading(false)
     }
+  }
+
+  const fetchMarketCatalog = async () => {
+    setMarketCatalogError(null)
+    try {
+      const response = await fetch(`${marketApiBase}/api/market/catalog`)
+      if (!response.ok) throw new Error(await response.text() || 'Failed to load market catalog')
+      const data = await response.json()
+      if (Array.isArray(data.markets) && data.markets.length) setMarketCatalog(data.markets)
+    } catch (err: any) {
+      setMarketCatalogError(err?.message || 'Failed to load market catalog')
+    }
+  }
+
+  const chooseMarket = (symbol: string) => {
+    setSelectedSymbol(symbol)
+    setMarketSearch('')
+    setMarketSelectorOpen(false)
+    setAiResult(null)
+    setAiError(null)
   }
 
   const fetchAgentStatus = async () => {
@@ -923,6 +965,11 @@ function App() {
   }, [])
 
   useEffect(() => {
+    fetchMarketCatalog()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  useEffect(() => {
     localStorage.setItem('mantle-ai-trader-portfolio', JSON.stringify(portfolioPositions))
   }, [portfolioPositions])
 
@@ -1227,8 +1274,38 @@ function App() {
             <div className="mb-3 flex items-start justify-between gap-4">
               <div>
                 <div className="flex flex-wrap items-center gap-2">
-                  <div className="asset-dot">{selectedMarket.label.slice(0, 1)}</div>
-                  <h1 className="text-2xl font-semibold text-white">{marketInfo.symbol}</h1>
+                  <div className="asset-dot">{selectedMarket.base.slice(0, 1)}</div>
+                  <div className="market-selector">
+                    <button type="button" className="market-selector-trigger" onClick={() => setMarketSelectorOpen((open) => !open)}>
+                      <span>{marketInfo.symbol}</span>
+                      <small>Change market</small>
+                    </button>
+                    {marketSelectorOpen && (
+                      <div className="market-selector-popover">
+                        <input
+                          value={marketSearch}
+                          onChange={(event) => setMarketSearch(event.target.value)}
+                          placeholder="Search BTC, AAVE, ENA..."
+                          autoFocus
+                        />
+                        <div className="market-selector-results">
+                          {filteredMarkets.map((market) => (
+                            <button
+                              type="button"
+                              key={market.symbol}
+                              onClick={() => chooseMarket(market.symbol)}
+                              className={market.symbol === selectedSymbol ? 'active' : ''}
+                            >
+                              <strong>{market.base}</strong>
+                              <span>{market.symbol}</span>
+                            </button>
+                          ))}
+                          {!filteredMarkets.length && <div className="market-selector-empty">No matching USDT spot pair</div>}
+                        </div>
+                        {marketCatalogError && <div className="market-selector-error">{marketCatalogError}</div>}
+                      </div>
+                    )}
+                  </div>
                   <span className="mini-badge">{marketInfo.exchange}</span>
                   <span className="mini-badge">{marketInfo.timeframe}</span>
                 </div>

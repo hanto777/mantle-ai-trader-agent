@@ -1,6 +1,8 @@
 import os
 import asyncio
 import json
+import re
+import time
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
@@ -131,14 +133,10 @@ class AnalyzeRequest(BaseModel):
 account = PaperAccount()
 agent_task: Optional[asyncio.Task] = None
 used_billing_nonces: set[str] = set()
-SUPPORTED_SYMBOLS = {
-    "MNT/USDT",
-    "BTC/USDT",
-    "ETH/USDT",
-    "SOL/USDT",
-    "ARB/USDT",
-    "OP/USDT",
-}
+MARKET_CATALOG_TTL_SECONDS = 15 * 60
+market_catalog_cache: dict = {"stored_at": 0.0, "markets": [], "exchange": "Bybit Spot", "source": "bybit"}
+MARKET_SYMBOL_PATTERN = re.compile(r"^[A-Z0-9]{2,20}/USDT$")
+LEVERAGED_TOKEN_SUFFIXES = ("3L", "3S", "5L", "5S", "UP", "DOWN", "BULL", "BEAR")
 
 ANALYSIS_CREDIT_VAULT_ABI = [
     {
@@ -301,9 +299,72 @@ def get_credit_vault_address() -> str:
 
 def normalize_symbol(symbol: str) -> str:
     normalized = symbol.strip().upper()
-    if normalized not in SUPPORTED_SYMBOLS:
-        raise HTTPException(status_code=400, detail=f"Unsupported symbol: {symbol}")
+    if not MARKET_SYMBOL_PATTERN.fullmatch(normalized):
+        raise HTTPException(status_code=400, detail="Only standard spot TOKEN/USDT symbols are supported")
     return normalized
+
+
+def create_spot_exchange(exchange_id: str, hostname: str | None = None):
+    exchange_class = getattr(ccxt, exchange_id)
+    config = {"enableRateLimit": True}
+    if hostname:
+        config["hostname"] = hostname
+    exchange = exchange_class(config)
+    exchange.options["defaultType"] = "spot"
+    return exchange
+
+
+def _normalize_market_catalog(markets: dict, exchange_name: str) -> list[dict]:
+    catalog = []
+    for market in markets.values():
+        base = str(market.get("base") or "").upper()
+        symbol = str(market.get("symbol") or "").upper()
+        if (
+            market.get("spot")
+            and market.get("active") is not False
+            and market.get("quote") == "USDT"
+            and MARKET_SYMBOL_PATTERN.fullmatch(symbol)
+            and not base.endswith(LEVERAGED_TOKEN_SUFFIXES)
+        ):
+            catalog.append({
+                "symbol": symbol,
+                "base": base,
+                "quote": "USDT",
+                "exchange": exchange_name,
+            })
+    catalog.sort(key=lambda market: (market["symbol"] != "MNT/USDT", market["base"]))
+    return catalog
+
+
+def fetch_market_catalog() -> list[dict]:
+    if time.monotonic() - market_catalog_cache["stored_at"] < MARKET_CATALOG_TTL_SECONDS:
+        return market_catalog_cache["markets"]
+
+    errors = []
+    providers = (
+        ("bybit", None, "Bybit Spot", "bybit"),
+        ("bybit", "bytick.com", "Bybit Spot", "bybit-bytick"),
+        ("bingx", None, "BingX Spot fallback", "bingx"),
+    )
+    for exchange_id, hostname, exchange_name, source in providers:
+        try:
+            exchange = create_spot_exchange(exchange_id, hostname)
+            catalog = _normalize_market_catalog(exchange.load_markets(), exchange_name)
+            if not catalog:
+                raise ValueError(f"{exchange_name} returned no active USDT spot pairs")
+            market_catalog_cache.update({
+                "stored_at": time.monotonic(),
+                "markets": catalog,
+                "exchange": exchange_name,
+                "source": source,
+            })
+            return catalog
+        except Exception as exc:
+            errors.append(f"{source}: {exc}")
+
+    if market_catalog_cache["markets"]:
+        return market_catalog_cache["markets"]
+    raise RuntimeError("; ".join(errors))
 
 
 def build_analysis_auth_message(wallet_address: str, amount: int, nonce: str, symbol: str) -> str:
@@ -485,33 +546,22 @@ async def _generate_content_with_retry(client, model_name: str, contents: list) 
 
 
 async def fetch_candles(symbol: str, timeframe: str = "1h", limit: int = 102) -> tuple[list, str]:
-    source = "bybit"
-    try:
-        exchange = ccxt.bybit({"enableRateLimit": True})
-        exchange.options["defaultType"] = "spot"
-        ohlcv = await run_in_threadpool(exchange.fetch_ohlcv, symbol, timeframe, None, limit)
-        if not ohlcv or len(ohlcv) < 2:
-            raise ValueError("Insufficient candle data from Bybit")
-        return ohlcv[:-1], source
-    except Exception as bybit_error:
-        if not hasattr(ccxt, "bingx"):
-            raise RuntimeError("Installed ccxt version does not support BingX")
+    errors = []
+    providers = (
+        ("bybit", None, "bybit"),
+        ("bybit", "bytick.com", "bybit-bytick"),
+        ("bingx", None, "bingx"),
+    )
+    for exchange_id, hostname, source in providers:
         try:
-            source = "bingx"
-            exchange = ccxt.bingx({"enableRateLimit": True})
-            exchange.options["defaultType"] = "spot"
+            exchange = create_spot_exchange(exchange_id, hostname)
             ohlcv = await run_in_threadpool(exchange.fetch_ohlcv, symbol, timeframe, None, limit)
             if not ohlcv or len(ohlcv) < 2:
-                raise ValueError("Insufficient candle data from BingX")
+                raise ValueError(f"Insufficient candle data from {source}")
             return ohlcv[:-1], source
-        except Exception as bingx_error:
-            raise HTTPException(
-                status_code=502,
-                detail=(
-                    f"Failed to fetch candles from Bybit and BingX. "
-                    f"Bybit error: {bybit_error}; BingX error: {bingx_error}"
-                )
-            )
+        except Exception as exc:
+            errors.append(f"{source}: {exc}")
+    raise HTTPException(status_code=502, detail=f"Failed to fetch candles. {'; '.join(errors)}")
 
 
 def calculate_indicators(ohlcv: list) -> dict:
@@ -861,13 +911,28 @@ async def get_market_candles(symbol: str = Query(default="MNT/USDT")):
         for row in closed_candles
     ]
 
-    display_name = "Bybit Spot" if source == "bybit" else "BingX Spot"
+    display_name = "Bybit Spot" if source.startswith("bybit") else "BingX Spot fallback"
     return {
         "symbol": symbol,
         "exchange": display_name,
         "source": source,
         "timeframe": "1H",
         "candles": candles,
+    }
+
+
+@app.get("/api/market/catalog")
+async def get_market_catalog():
+    try:
+        markets = await run_in_threadpool(fetch_market_catalog)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to load Bybit spot markets: {exc}")
+    return {
+        "exchange": market_catalog_cache["exchange"],
+        "source": market_catalog_cache["source"],
+        "quote": "USDT",
+        "markets": markets,
+        "cached_for_seconds": MARKET_CATALOG_TTL_SECONDS,
     }
 
 
