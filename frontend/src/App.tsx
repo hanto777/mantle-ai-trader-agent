@@ -6,6 +6,7 @@ import { AnalysisCreditVaultABI, ANALYSIS_CREDIT_REQUIRED, ANALYSIS_CREDIT_VAULT
 
 const apiBase = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000'
 const portfolioApiBase = import.meta.env.VITE_PORTFOLIO_API_BASE_URL || apiBase
+const dexApiBase = import.meta.env.VITE_DEX_API_BASE_URL || portfolioApiBase
 
 const MARKETS = [
   { symbol: 'MNT/USDT', label: 'MNT', tone: 'Mantle native' },
@@ -207,7 +208,11 @@ function App() {
   const [walletAddress, setWalletAddress] = useState<string | null>(null)
   const [shortAddress, setShortAddress] = useState<string | null>(null)
   const [networkName, setNetworkName] = useState<string | null>(null)
+  const [walletChainId, setWalletChainId] = useState<number | null>(null)
   const [isCorrectNetwork, setIsCorrectNetwork] = useState<boolean>(false)
+  const [walletMntBalance, setWalletMntBalance] = useState<string | null>(null)
+  const [walletBalanceLoading, setWalletBalanceLoading] = useState(false)
+  const [walletBalanceError, setWalletBalanceError] = useState<string | null>(null)
   const [txHash, setTxHash] = useState<string | null>(null)
   const [signals, setSignals] = useState<any[]>([])
   const [loadingSignals, setLoadingSignals] = useState(false)
@@ -550,7 +555,7 @@ function App() {
     setDexQuotesLoading(true)
     setDexQuotesError(null)
     try {
-      const response = await fetch(`${apiBase}/api/dex/quotes?symbol=MNT%2FUSDT&amount_in=${encodeURIComponent(amount)}`)
+      const response = await fetch(`${dexApiBase}/api/dex/quotes?symbol=MNT%2FUSDT&amount_in=${encodeURIComponent(amount)}&network=mantle_mainnet`)
       if (!response.ok) {
         const text = await response.text()
         if (response.status === 404) {
@@ -718,6 +723,8 @@ function App() {
     } else {
       setWalletAddress(null)
       setShortAddress(null)
+      setWalletMntBalance(null)
+      setWalletBalanceError(null)
     }
   }
 
@@ -741,16 +748,42 @@ function App() {
       const eth = (window as any).ethereum
       if (!eth) {
         setNetworkName(null)
+        setWalletChainId(null)
         setIsCorrectNetwork(false)
         return
       }
       const provider = new ethers.BrowserProvider(eth)
       const net = await provider.getNetwork()
-      setNetworkName(net.name || `chain:${net.chainId}`)
-      setIsCorrectNetwork(Number(net.chainId) === Number(MANTLE_SEPOLIA_CHAIN_ID))
+      const chainId = Number(net.chainId)
+      setWalletChainId(chainId)
+      setNetworkName(chainId === MANTLE_SEPOLIA_CHAIN_ID ? 'Mantle Sepolia' : (net.name || `Chain ${chainId}`))
+      setIsCorrectNetwork(chainId === Number(MANTLE_SEPOLIA_CHAIN_ID))
     } catch (e) {
       setNetworkName(null)
+      setWalletChainId(null)
       setIsCorrectNetwork(false)
+    }
+  }
+
+  const loadWalletMntBalance = async () => {
+    if (!walletAddress || !isCorrectNetwork) {
+      setWalletMntBalance(null)
+      setWalletBalanceError(null)
+      return
+    }
+    setWalletBalanceLoading(true)
+    setWalletBalanceError(null)
+    try {
+      const eth = (window as any).ethereum
+      if (!eth) throw new Error('Wallet provider unavailable')
+      const provider = new ethers.BrowserProvider(eth)
+      const balance = await provider.getBalance(walletAddress)
+      setWalletMntBalance(ethers.formatEther(balance))
+    } catch (err: any) {
+      setWalletMntBalance(null)
+      setWalletBalanceError(err?.message || 'Unable to read MNT balance')
+    } finally {
+      setWalletBalanceLoading(false)
     }
   }
 
@@ -895,6 +928,11 @@ function App() {
 
   useEffect(() => {
     loadCreditBalance()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [walletAddress, isCorrectNetwork])
+
+  useEffect(() => {
+    loadWalletMntBalance()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [walletAddress, isCorrectNetwork])
 
@@ -1231,11 +1269,48 @@ function App() {
               <div className="dex-terminal-head">
                 <div>
                   <div className="font-mono text-xs uppercase tracking-[0.2em] text-cyan-300">DEX route terminal</div>
-                  <h3 className="mt-1 text-base font-semibold text-white">Mantle mainnet quote preview</h3>
-                  <div className="mt-1 font-mono text-[10px] uppercase tracking-wide text-slate-400">Bridged legacy USDT to native MNT</div>
+                  <h3 className="mt-1 text-base font-semibold text-white">{dexQuotes?.network || 'Mantle Mainnet'} quote preview</h3>
+                  <div className="mt-1 font-mono text-[10px] uppercase tracking-wide text-slate-400">Read-only route comparison, including FusionX V2</div>
                 </div>
                 <span className="mini-badge live">Read only</span>
               </div>
+
+              <div className={`dex-wallet-status ${isCorrectNetwork ? 'connected' : ''}`}>
+                <div>
+                  <span>Test wallet</span>
+                  <strong>{shortAddress || 'Not connected'}</strong>
+                </div>
+                <div>
+                  <span>Wallet network</span>
+                  <strong>{networkName ? `${networkName}${walletChainId ? ` · ${walletChainId}` : ''}` : 'Not detected'}</strong>
+                </div>
+                <div>
+                  <span>MNT balance</span>
+                  <strong>
+                    {walletBalanceLoading
+                      ? 'Reading...'
+                      : walletMntBalance
+                        ? `${Number(walletMntBalance).toFixed(4)} MNT`
+                        : isCorrectNetwork
+                          ? 'Unavailable'
+                          : '-'}
+                  </strong>
+                </div>
+                {!walletAddress ? (
+                  <button type="button" onClick={connectWallet} className="ghost-button px-3 py-2 text-[10px] font-bold">
+                    Connect wallet
+                  </button>
+                ) : !isCorrectNetwork ? (
+                  <button type="button" onClick={switchToMantleSepolia} className="ghost-button px-3 py-2 text-[10px] font-bold">
+                    Switch to Sepolia
+                  </button>
+                ) : (
+                  <button type="button" onClick={loadWalletMntBalance} className="ghost-button px-3 py-2 text-[10px] font-bold">
+                    Refresh balance
+                  </button>
+                )}
+              </div>
+              {walletBalanceError && <div className="mt-2 font-mono text-[10px] text-rose-300">{walletBalanceError}</div>}
 
               <div className="dex-quote-controls">
                 <label>
@@ -1263,6 +1338,7 @@ function App() {
                   { provider: 'Merchant Moe', kind: 'direct', status: 'ready', note: 'Live LB Quoter ready' },
                   { provider: 'Agni', kind: 'direct', status: 'ready', note: 'Live direct quoter ready' },
                   { provider: 'Uniswap V3', kind: 'direct', status: 'ready', note: 'Live QuoterV2 ready' },
+                  { provider: 'FusionX V2', kind: 'direct', status: 'ready', note: 'Live V2 router ready' },
                 ] as DexQuote[]).map((quote) => (
                   <button
                     key={quote.provider}

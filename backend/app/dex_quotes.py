@@ -11,10 +11,18 @@ from urllib.request import Request, urlopen
 
 
 MANTLE_CHAIN_ID = 5000
+MANTLE_SEPOLIA_CHAIN_ID = 5003
 NATIVE_MNT_ADDRESS = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"
 MANTLE_USDT_ADDRESS = "0x201EBa5CC46D216Ce6DC03F6a759e8E766e956aE"
 WMNT_ADDRESS = "0x78c1b0C915c4FAA5FffA6CAbf0219DA63d7f4cb8"
 MANTLE_MAINNET_RPC_URL = os.getenv("MANTLE_MAINNET_RPC_URL", "https://rpc.mantle.xyz")
+MANTLE_SEPOLIA_RPC_URL = os.getenv("MANTLE_SEPOLIA_RPC_URL", "https://rpc.sepolia.mantle.xyz")
+
+FUSIONX_MAINNET_V2_ROUTER = "0xDd0840118bF9CCCc6d67b2944ddDfbdb995955FD"
+FUSIONX_TESTNET_V2_ROUTER = "0x45e6f621c5ED8616cCFB9bBaeBAcF9638aBB0033"
+FUSIONX_TESTNET_USDT = "0xa9b72cCC9968aFeC98A96239B5AA48d828e8D827"
+FUSIONX_TESTNET_WMNT = "0x8734110e5e1dcF439c7F549db740E546fea82d66"
+FUSIONX_GET_AMOUNTS_OUT_SELECTOR = "d06ca61f"
 
 MERCHANT_MOE_QUOTER = "0x501b8AFd35df20f531fF45F6f695793AC3316c85"
 AGNI_QUOTER = "0x9488C05a7b75a6FefdcAE4f11a33467bcBA60177"
@@ -70,7 +78,7 @@ def _address_word(address: str) -> str:
     return address.lower().removeprefix("0x").rjust(64, "0")
 
 
-def _rpc_eth_call(to: str, data: str, timeout: int = 8) -> bytes:
+def _rpc_eth_call(to: str, data: str, timeout: int = 8, rpc_url: str = MANTLE_MAINNET_RPC_URL) -> bytes:
     body = json.dumps(
         {
             "jsonrpc": "2.0",
@@ -80,7 +88,7 @@ def _rpc_eth_call(to: str, data: str, timeout: int = 8) -> bytes:
         }
     ).encode("utf-8")
     request = Request(
-        MANTLE_MAINNET_RPC_URL,
+        rpc_url,
         data=body,
         headers={"Content-Type": "application/json", "User-Agent": "Mantle-AI-Trader/0.6"},
         method="POST",
@@ -106,7 +114,14 @@ def _dynamic_uint_array(data: bytes, tuple_base: int, field_index: int) -> list[
     return [_uint_at(data, array_base + 32 + index * 32) for index in range(length)]
 
 
-def _available_quote(provider: str, amount_in: float, amount_out_wei: int, route: str, **details) -> dict:
+def _available_quote(
+    provider: str,
+    amount_in: float,
+    amount_out_wei: int,
+    route: str,
+    note: str = "Live Mantle mainnet contract quote",
+    **details,
+) -> dict:
     amount_out = float(Decimal(amount_out_wei) / Decimal(10 ** 18))
     if amount_out <= 0:
         raise ValueError(f"{provider} returned an empty quote")
@@ -118,7 +133,7 @@ def _available_quote(provider: str, amount_in: float, amount_out_wei: int, route
         "amount_out": amount_out,
         "rate": amount_out / amount_in,
         "route": route,
-        "note": "Live Mantle mainnet contract quote",
+        "note": note,
         **details,
     }
 
@@ -266,21 +281,81 @@ def fetch_uniswap_v3_quote(amount_in: float) -> dict:
     )
 
 
-DEFAULT_FETCHERS = (
+def _fetch_fusionx_v2_quote(
+    amount_in: float,
+    router: str,
+    token_in: str,
+    token_out: str,
+    rpc_url: str,
+    note: str,
+) -> dict:
+    amount_raw = int(Decimal(str(amount_in)) * Decimal(10 ** 6))
+    calldata = (
+        FUSIONX_GET_AMOUNTS_OUT_SELECTOR
+        + _word(amount_raw)
+        + _word(64)
+        + _word(2)
+        + _address_word(token_in)
+        + _address_word(token_out)
+    )
+    data = _rpc_eth_call(router, calldata, rpc_url=rpc_url)
+    amounts = _dynamic_uint_array(data, 0, 0)
+    if len(amounts) < 2:
+        raise ValueError("FusionX returned no USDT/WMNT route")
+    return _available_quote(
+        "FusionX V2",
+        amount_in,
+        amounts[-1],
+        "USDT -> wrapped MNT",
+        note=note,
+        router=router,
+    )
+
+
+def fetch_fusionx_mainnet_quote(amount_in: float) -> dict:
+    return _fetch_fusionx_v2_quote(
+        amount_in,
+        FUSIONX_MAINNET_V2_ROUTER,
+        MANTLE_USDT_ADDRESS,
+        WMNT_ADDRESS,
+        MANTLE_MAINNET_RPC_URL,
+        "Live Mantle mainnet FusionX contract quote",
+    )
+
+
+def fetch_fusionx_testnet_quote(amount_in: float) -> dict:
+    return _fetch_fusionx_v2_quote(
+        amount_in,
+        FUSIONX_TESTNET_V2_ROUTER,
+        FUSIONX_TESTNET_USDT,
+        FUSIONX_TESTNET_WMNT,
+        MANTLE_SEPOLIA_RPC_URL,
+        "Live Mantle Sepolia FusionX contract quote",
+    )
+
+
+MAINNET_FETCHERS = (
     ("OpenOcean", "aggregator", fetch_openocean_quote),
     ("Merchant Moe", "direct", fetch_merchant_moe_quote),
     ("Agni", "direct", fetch_agni_quote),
     ("Uniswap V3", "direct", fetch_uniswap_v3_quote),
+    ("FusionX V2", "direct", fetch_fusionx_mainnet_quote),
 )
+SEPOLIA_FETCHERS = (("FusionX V2", "direct", fetch_fusionx_testnet_quote),)
+DEFAULT_FETCHERS = MAINNET_FETCHERS
 
 
-def get_read_only_quotes(symbol: str, amount_in: float, provider_fetchers=None) -> dict:
+def get_read_only_quotes(symbol: str, amount_in: float, provider_fetchers=None, network: str = "mantle_mainnet") -> dict:
     if symbol != "MNT/USDT":
         raise ValueError("DEX quote preview currently supports MNT/USDT only")
     if amount_in <= 0 or amount_in > 10_000:
         raise ValueError("Quote amount must be greater than 0 and no more than 10,000 USDT")
 
-    fetchers = provider_fetchers or DEFAULT_FETCHERS
+    if network not in {"mantle_mainnet", "mantle_sepolia"}:
+        raise ValueError("DEX quote network must be mantle_mainnet or mantle_sepolia")
+
+    is_sepolia = network == "mantle_sepolia"
+    fetchers = provider_fetchers or (SEPOLIA_FETCHERS if is_sepolia else MAINNET_FETCHERS)
     quotes_by_provider = {}
     with ThreadPoolExecutor(max_workers=len(fetchers)) as executor:
         futures = {
@@ -312,16 +387,19 @@ def get_read_only_quotes(symbol: str, amount_in: float, provider_fetchers=None) 
 
     return {
         "mode": "read_only",
-        "network": "Mantle Mainnet",
-        "chain_id": MANTLE_CHAIN_ID,
+        "network": "Mantle Sepolia" if is_sepolia else "Mantle Mainnet",
+        "chain_id": MANTLE_SEPOLIA_CHAIN_ID if is_sepolia else MANTLE_CHAIN_ID,
         "symbol": symbol,
         "token_in": {
             "symbol": "USDT",
-            "variant": "Mantle bridged legacy USDT",
-            "address": MANTLE_USDT_ADDRESS,
+            "variant": "FusionX testnet USDT" if is_sepolia else "Mantle bridged legacy USDT",
+            "address": FUSIONX_TESTNET_USDT if is_sepolia else MANTLE_USDT_ADDRESS,
             "amount": amount_in,
         },
-        "token_out": {"symbol": "MNT", "address": NATIVE_MNT_ADDRESS},
+        "token_out": {
+            "symbol": "MNT",
+            "address": FUSIONX_TESTNET_WMNT if is_sepolia else NATIVE_MNT_ADDRESS,
+        },
         "best_provider": best_provider,
         "quotes": quotes,
         "quoted_at": datetime.now(timezone.utc).isoformat(),

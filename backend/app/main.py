@@ -928,10 +928,11 @@ async def billing_status():
 async def dex_quotes(
     symbol: str = Query(default="MNT/USDT"),
     amount_in: float = Query(default=100.0, gt=0, le=10_000),
+    network: str = Query(default="mantle_mainnet"),
 ):
     symbol = normalize_symbol(symbol)
     try:
-        return await run_in_threadpool(get_read_only_quotes, symbol, amount_in)
+        return await run_in_threadpool(get_read_only_quotes, symbol, amount_in, None, network)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 

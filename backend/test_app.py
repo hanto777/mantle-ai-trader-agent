@@ -290,6 +290,43 @@ class TestDexQuotePreview(unittest.TestCase):
         with self.assertRaises(ValueError):
             get_read_only_quotes("BTC/USDT", 100)
 
+    def test_fusionx_testnet_quote_decodes_router_response(self):
+        encoded = (
+            (32).to_bytes(32, "big")
+            + (2).to_bytes(32, "big")
+            + (100_000_000).to_bytes(32, "big")
+            + (250 * 10 ** 18).to_bytes(32, "big")
+        )
+        with patch.object(dex_quotes, "_rpc_eth_call", return_value=encoded) as rpc_call:
+            quote = dex_quotes.fetch_fusionx_testnet_quote(100)
+
+        self.assertEqual(quote["provider"], "FusionX V2")
+        self.assertEqual(quote["amount_out"], 250)
+        self.assertIn("Sepolia", quote["note"])
+        self.assertEqual(rpc_call.call_args.kwargs["rpc_url"], dex_quotes.MANTLE_SEPOLIA_RPC_URL)
+
+    def test_testnet_snapshot_uses_fusionx_metadata(self):
+        result = get_read_only_quotes(
+            "MNT/USDT",
+            100,
+            provider_fetchers=(("FusionX V2", "direct", lambda _: {
+                "provider": "FusionX V2",
+                "kind": "direct",
+                "status": "available",
+                "amount_in": 100,
+                "amount_out": 200,
+                "rate": 2,
+                "route": "Testnet USDT -> wrapped MNT",
+                "note": "test quote",
+            }),),
+            network="mantle_sepolia",
+        )
+
+        self.assertEqual(result["network"], "Mantle Sepolia")
+        self.assertEqual(result["chain_id"], 5003)
+        self.assertEqual(result["best_provider"], "FusionX V2")
+        self.assertEqual(result["token_in"]["address"], dex_quotes.FUSIONX_TESTNET_USDT)
+
     def test_openocean_retries_after_temporary_failure(self):
         payload = {
             "outAmount": "200000000000000000000",
