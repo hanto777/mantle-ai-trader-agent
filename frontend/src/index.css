@@ -223,7 +223,9 @@ button {
 
 .terminal-shell {
   position: relative;
+  min-height: 111.111vh;
   overflow-x: hidden;
+  zoom: .9;
   background:
     linear-gradient(180deg, rgba(2, 6, 18, .18), rgba(2, 8, 23, .46)),
     radial-gradient(ellipse at center, rgba(3, 10, 27, .42) 0%, rgba(3, 10, 27, .2) 48%, transparent 76%),
@@ -1061,6 +1063,61 @@ button {
 
 .allocation-legend-row span { color: #94a3b8; font-size: 12px; }
 .allocation-legend-row strong { color: #e2e8f0; font-size: 12px; }
+
+/* Demo readability: keep the terminal dense, but legible on laptops and projectors. */
+.terminal-shell .text-\[9px\] { font-size: 10px !important; }
+.terminal-shell .text-\[10px\] { font-size: 11px !important; line-height: 1rem !important; }
+.terminal-shell .text-xs { font-size: 12px !important; line-height: 1.1rem !important; }
+.terminal-shell .text-sm { font-size: 14px !important; line-height: 1.35rem !important; }
+
+.mini-badge,
+.ai-core-label,
+.ai-core-sync,
+.signal-pill { font-size: 10px; }
+
+.explanation-fact span,
+.indicator-row em,
+.indicator-state,
+.market-stat-grid .stat-tile span { font-size: 9px; }
+
+.explanation-fact strong,
+.indicator-row,
+.stat-tile span,
+.dex-safety-line span,
+.trade-side-button span,
+.trade-preview-grid span,
+.portfolio-add-grid label,
+.portfolio-header { font-size: 10px; }
+
+.history-row,
+.dex-route-row span,
+.slippage-panel label,
+.slippage-panel span,
+.trade-preview-grid strong,
+.portfolio-add-grid input,
+.portfolio-add-grid select,
+.portfolio-row span,
+.allocation-legend-row span,
+.allocation-legend-row strong { font-size: 11px; }
+
+.dex-route-row strong,
+.portfolio-row strong { font-size: 12px; }
+.market-stat-grid .stat-tile strong { font-size: 14px; }
+
+.ai-explanation h3 { font-size: 18px; line-height: 1.45rem; }
+.ai-explanation > p { font-size: 15px !important; line-height: 1.55rem !important; }
+.ai-explanation .text-\[10px\] { font-size: 11px !important; }
+.ai-explanation .signal-pill { font-size: 11px; }
+.ai-explanation .explanation-fact span { font-size: 11px; }
+.ai-explanation .explanation-fact strong { font-size: 12px; line-height: 1.15rem; }
+
+.signal-output .text-\[10px\] { font-size: 11px !important; }
+.signal-output .text-xs { font-size: 12px !important; line-height: 1.15rem !important; }
+.signal-output .text-sm { font-size: 15px !important; line-height: 1.5rem !important; }
+.signal-output .signal-pill { font-size: 11px; }
+.signal-output .indicator-row { font-size: 12px; }
+.signal-output .indicator-row em,
+.signal-output .indicator-state { font-size: 10px; }
 
 @keyframes orbit { from { rotate: 0deg; } to { rotate: 360deg; } }
 @keyframes core-pulse { 0%, 100% { transform: scale(1); box-shadow: 0 0 44px rgba(34, 211, 238, .8); } 50% { transform: scale(1.28); box-shadow: 0 0 70px rgba(34, 211, 238, 1); } }
