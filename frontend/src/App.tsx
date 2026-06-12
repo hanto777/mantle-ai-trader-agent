@@ -100,6 +100,13 @@ type AIResult = {
   candles_last_timestamp?: number
   stale?: boolean
   warning?: string
+  quality_gate?: {
+    passed: boolean
+    original_action: 'BUY' | 'SELL'
+    rejection_reasons?: string[]
+    upside_percent?: number
+    reward_risk?: number
+  }
   credits_consumed?: number
   credit_consume_tx_hash?: string
   analysis_mode?: AnalysisMode
@@ -234,6 +241,47 @@ type PortfolioMarketsResponse = {
   assets: PortfolioMarket[]
 }
 
+type BuyPerformanceResponse = {
+  methodology: {
+    tracked_action: 'BUY'
+    evaluation_window_hours: number
+    evaluation_timeframe: string
+    tracking_start_timestamp: number
+    outcome_rule: string
+  }
+  metrics: {
+    tracked_buy_signals: number
+    legacy_buy_signals_excluded: number
+    evaluated_signals: number
+    pending_signals: number
+    unavailable_signals: number
+    profit_opportunities: number
+    reversed_signals: number
+    losses: number
+    opportunity_rate_percent: number | null
+    average_mfe_percent: number | null
+    average_mae_percent: number | null
+    average_return_percent: number | null
+  }
+  evaluations: Array<{
+    symbol: string
+    action: 'BUY'
+    entry_price: number
+    confidence: number
+    signal_timestamp: number
+    evaluation_at: number
+    trader?: string | null
+    status: 'pending' | 'evaluated' | 'unavailable'
+    evaluation_price: number | null
+    evaluated_timestamp?: number
+    return_percent: number | null
+    mfe_percent: number | null
+    mae_percent: number | null
+    outcome: 'PROFIT_OPPORTUNITY' | 'REVERSED' | 'LOSS' | 'FLAT' | null
+    source?: string
+  }>
+}
+
 function formatCurrency(value: number) {
   return `$${value.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',')}`
 }
@@ -309,6 +357,9 @@ function App() {
   const [depositModalOpen, setDepositModalOpen] = useState(false)
   const [depositAmountMnt, setDepositAmountMnt] = useState('1')
   const [showAllSignals, setShowAllSignals] = useState(false)
+  const [buyPerformance, setBuyPerformance] = useState<BuyPerformanceResponse | null>(null)
+  const [performanceLoading, setPerformanceLoading] = useState(false)
+  const [performanceError, setPerformanceError] = useState<string | null>(null)
   const [reasoningStepIndex, setReasoningStepIndex] = useState(0)
   const [dexQuoteAmount, setDexQuoteAmount] = useState('100')
   const [dexQuotes, setDexQuotes] = useState<DexQuoteResponse | null>(null)
@@ -988,6 +1039,33 @@ function App() {
     }
   }
 
+  const loadBuyPerformance = async (onChainSignals: any[]) => {
+    setPerformanceLoading(true)
+    setPerformanceError(null)
+    try {
+      const response = await fetch(`${apiBase}/api/performance/evaluate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          signals: onChainSignals.map((signal) => ({
+            symbol: signal.symbol,
+            action: signal.action,
+            price: signal.price,
+            confidence: signal.confidence,
+            timestamp: signal.timestamp,
+            trader: signal.trader,
+          })),
+        }),
+      })
+      if (!response.ok) throw new Error(await response.text() || 'Failed to evaluate BUY signals')
+      setBuyPerformance(await response.json())
+    } catch (err: any) {
+      setPerformanceError(err?.message || 'Failed to evaluate BUY signals')
+    } finally {
+      setPerformanceLoading(false)
+    }
+  }
+
   const loadSignals = async () => {
     setLoadingSignals(true)
     try {
@@ -1010,7 +1088,9 @@ function App() {
           reason: s.reason
         })
       }
-      setSignals(items.reverse())
+      const orderedSignals = items.reverse()
+      setSignals(orderedSignals)
+      await loadBuyPerformance(orderedSignals)
     } catch (e) {
       console.error('loadSignals', e)
     } finally {
@@ -1132,6 +1212,47 @@ function App() {
   const entryLevels = aiResult?.timeframe_levels?.[resultEntryTimeframe]
   const trendLevels = aiResult?.timeframe_levels?.[resultTrendTimeframe]
   const historicalSetup = aiResult?.historical_setup
+  const currentMomentum = entryIndicators && trendIndicators
+    ? entryIndicators.macd_state === trendIndicators.macd_state
+      ? entryIndicators.macd_state
+      : 'mixed'
+    : 'unknown'
+  const historicalDirection = historicalSetup?.signal ?? 'insufficient'
+  const historicalMoveStrength = historicalSetup && historicalSetup.signal !== 'insufficient'
+    ? Math.abs(historicalSetup.average_move_percent) < 0.3
+      ? 'weak'
+      : Math.abs(historicalSetup.average_move_percent) < 1
+        ? 'moderate'
+        : 'strong'
+    : 'insufficient'
+  const directionalMismatch = Boolean(
+    historicalSetup &&
+    ((historicalDirection === 'bullish' && currentMomentum === 'bearish') ||
+      (historicalDirection === 'bearish' && currentMomentum === 'bullish'))
+  )
+  const setupConflict = directionalMismatch && historicalMoveStrength !== 'weak'
+  const weakHistoricalEdge = historicalMoveStrength === 'weak'
+  const setupNeedsConfirmation = directionalMismatch || aiResult?.action === 'HOLD'
+  const nearEntrySupport = Boolean(entryLevels && entryLevels.support_distance_percent <= 1)
+  const bullishConfirmationNeeded = setupNeedsConfirmation && historicalDirection === 'bullish'
+  const guidanceTitle = bullishConfirmationNeeded
+    ? nearEntrySupport ? 'Support Bounce Setup Forming' : 'Wait for Bullish Confirmation'
+    : setupNeedsConfirmation && historicalDirection === 'bearish'
+      ? 'Wait for Bearish Confirmation'
+      : aiResult?.action === 'HOLD'
+        ? 'No Confirmed Entry'
+        : `${aiResult?.action} Evidence Aligned`
+  const actionGuidance = directionalMismatch
+    ? historicalDirection === 'bullish'
+      ? nearEntrySupport
+        ? `Price is testing ${formatTimeframe(resultEntryTimeframe)} support. Wait for support to hold and bullish entry-timeframe confirmation before considering a BUY.`
+        : `Wait for ${formatTimeframe(resultEntryTimeframe)} MACD to turn bullish before considering a BUY.`
+      : `Wait for ${formatTimeframe(resultEntryTimeframe)} MACD to turn bearish and price to close below ${entryLevels ? `$${entryLevels.support_price.toFixed(6)}` : 'entry support'} before reducing exposure.`
+    : aiResult?.action === 'BUY'
+      ? `Bullish evidence is aligned. Use ${entryLevels ? `$${entryLevels.support_price.toFixed(6)}` : 'entry support'} as the nearest invalidation reference.`
+      : aiResult?.action === 'SELL'
+        ? `Bearish evidence is aligned. A recovery above ${entryLevels ? `$${entryLevels.resistance_price.toFixed(6)}` : 'entry resistance'} would weaken the exit case.`
+        : `No confirmed directional edge. Wait for a break beyond ${entryLevels ? `$${entryLevels.support_price.toFixed(6)} support or $${entryLevels.resistance_price.toFixed(6)} resistance` : 'the entry-timeframe range'}.`
   const totalVolume = candles.reduce((sum, candle) => sum + candle.volume, 0)
   const firstClose = candles[0]?.close ?? latestPrice ?? 0
   const marketChange = latestPrice && firstClose ? ((latestPrice - firstClose) / firstClose) * 100 : 0
@@ -1716,10 +1837,20 @@ function App() {
                   <div className={`signal-pill ${signalClass(aiResult.action)}`}>{confidencePercent}% confidence</div>
                 </div>
                 <p className="mt-4 text-sm leading-7 text-slate-200">{aiResult.reason}</p>
-                <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
                   <div className="explanation-fact"><span>Timeframes</span><strong>{formatTimeframe(resultEntryTimeframe)} entry + {formatTimeframe(resultTrendTimeframe)} trend</strong></div>
                   <div className="explanation-fact"><span>{formatTimeframe(resultEntryTimeframe)} levels</span><strong>{entryLevels ? `S $${entryLevels.support_price.toFixed(6)} / R $${entryLevels.resistance_price.toFixed(6)}` : '-'}</strong></div>
                   <div className="explanation-fact"><span>{formatTimeframe(resultTrendTimeframe)} levels</span><strong>{trendLevels ? `S $${trendLevels.support_price.toFixed(6)} / R $${trendLevels.resistance_price.toFixed(6)}` : '-'}</strong></div>
+                  <div className="explanation-fact">
+                    <span>Signal quality gate</span>
+                    <strong>
+                      {aiResult.quality_gate
+                        ? aiResult.quality_gate.passed
+                          ? `Passed · R/R ${aiResult.quality_gate.reward_risk?.toFixed(2) ?? '-'}`
+                          : `${aiResult.quality_gate.original_action} blocked → HOLD`
+                        : 'No directional signal'}
+                    </strong>
+                  </div>
                 </div>
               </div>
             ) : (
@@ -1809,6 +1940,43 @@ function App() {
                   ))}
                 </div>
               )}
+              {aiResult && historicalSetup && (
+                <div className={`action-guidance mt-4 ${setupConflict ? 'conflict' : setupNeedsConfirmation ? 'unconfirmed' : aiResult.action.toLowerCase()}`}>
+                  <div className="action-guidance-head">
+                    <div>
+                      <span>{setupConflict ? 'Setup conflict detected' : setupNeedsConfirmation ? 'Setup not confirmed' : 'Action guidance'}</span>
+                      <h4>{guidanceTitle}</h4>
+                    </div>
+                    <strong>{aiResult.action}</strong>
+                  </div>
+                  <div className="action-guidance-grid">
+                    <div><span>Current momentum</span><strong className={currentMomentum}>{currentMomentum}</strong></div>
+                    <div><span>Historical outcome</span><strong className={historicalDirection}>{historicalMoveStrength} {historicalDirection}</strong></div>
+                    <div><span>Expected historical move</span><strong>{historicalSetup.average_move_percent >= 0 ? '+' : ''}{historicalSetup.average_move_percent.toFixed(2)}%</strong></div>
+                    <div><span>Recommended action</span><strong>{aiResult.action}</strong></div>
+                  </div>
+                  {bullishConfirmationNeeded && entryLevels ? (
+                    <div className="entry-scenario-grid">
+                      <div className={`entry-scenario support-bounce ${nearEntrySupport ? 'priority' : ''}`}>
+                        <div className="entry-scenario-head">
+                          <span>{nearEntrySupport ? 'Primary setup' : 'Earlier entry'}</span>
+                          <strong>Support Bounce</strong>
+                        </div>
+                        <p>Support near <b>${entryLevels.support_price.toFixed(6)}</b> must hold. Confirm with a bullish reversal candle and improving {formatTimeframe(resultEntryTimeframe)} MACD or Stochastic.</p>
+                        <small>Invalidation: a confirmed close below support.</small>
+                      </div>
+                      <div className={`entry-scenario breakout ${nearEntrySupport ? '' : 'priority'}`}>
+                        <div className="entry-scenario-head">
+                          <span>{nearEntrySupport ? 'Safer alternative' : 'Primary setup'}</span>
+                          <strong>Breakout + Retest</strong>
+                        </div>
+                        <p>Wait for a close above <b>${entryLevels.resistance_price.toFixed(6)}</b>, then prefer a successful retest instead of chasing the breakout candle.</p>
+                        <small>Invalidation: price falls back below resistance after the retest.</small>
+                      </div>
+                    </div>
+                  ) : <p>{actionGuidance}</p>}
+                </div>
+              )}
               {historicalSetup && (
                 <div className={`historical-rsi-card mt-4 ${historicalSetup.signal}`}>
                   <div className="historical-rsi-visual">
@@ -1826,10 +1994,10 @@ function App() {
                   <div className="historical-rsi-content">
                     <div className="historical-rsi-heading">
                       <div>
-                        <span>Historical RSI Signal</span>
+                        <span>Historical Outcome Bias</span>
                         <h4>{historicalSetup.signal === 'insufficient'
                           ? historicalSetup.insufficient_reason === 'insufficient_history' ? 'Awaiting More History' : 'No Reliable Historical Match'
-                          : `${historicalSetup.signal} bias`}</h4>
+                          : `${historicalMoveStrength} ${historicalSetup.signal} bias`}</h4>
                         <p>{historicalSetup.signal === 'insufficient'
                           ? historicalSetup.insufficient_reason === 'insufficient_history'
                             ? `Not enough closed ${formatTimeframe(resultEntryTimeframe)} candles to evaluate this RSI setup.`
@@ -1839,6 +2007,7 @@ function App() {
                       <strong className="historical-rsi-score">
                         {historicalSetup.signal === 'insufficient' ? '—' : `${historicalSetup.signal === 'bearish' ? historicalSetup.bearish_percent : historicalSetup.bullish_percent}%`}
                         <small>{historicalSetup.signal}</small>
+                        {weakHistoricalEdge && <em>Weak edge</em>}
                       </strong>
                     </div>
                     {historicalSetup.signal === 'insufficient'
@@ -1878,13 +2047,21 @@ function App() {
           <div className="glass-panel performance-hero p-6">
             <span className="mini-badge live">Verifiable intelligence</span>
             <h2 className="mt-4 text-3xl font-semibold text-white">AI Performance</h2>
-            <p className="mt-3 max-w-3xl text-sm text-slate-300">A transparent alternative to anonymous signal channels. Every completed BUY and SELL setup will be evaluated against market data and linked to its immutable Mantle record.</p>
+            <p className="mt-3 max-w-3xl text-sm text-slate-300">A transparent alternative to anonymous signal channels. The public track record starts with the strict quality-gated algorithm; earlier on-chain signals remain visible as legacy history.</p>
+            <div className="mt-4 inline-flex rounded-full border border-cyan-400/30 bg-cyan-400/10 px-3 py-2 font-mono text-[10px] uppercase tracking-[0.16em] text-cyan-200">
+              New methodology live · {buyPerformance?.methodology.tracking_start_timestamp ? new Date(buyPerformance.methodology.tracking_start_timestamp * 1000).toLocaleString() : 'June 12, 2026'}
+            </div>
           </div>
           <div className="grid gap-3 md:grid-cols-4">
-            <div className="stat-tile"><span>Verified signals</span><strong>-</strong><small>Tracking starts with BUY / SELL</small></div>
-            <div className="stat-tile"><span>Win rate</span><strong>-</strong><small>Completed setups only</small></div>
-            <div className="stat-tile"><span>Average PnL</span><strong>-</strong><small>After evaluation window</small></div>
-            <div className="stat-tile"><span>On-chain proofs</span><strong>{signals.length}</strong><small>Mantle Sepolia records</small></div>
+            <div className="stat-tile"><span>Tracked BUY signals</span><strong>{performanceLoading ? '...' : buyPerformance?.metrics.tracked_buy_signals ?? 0}</strong><small>On-chain BUY only</small></div>
+            <div className="stat-tile"><span>Evaluated signals</span><strong>{performanceLoading ? '...' : buyPerformance?.metrics.evaluated_signals ?? 0}</strong><small>Fixed 24h evaluation window</small></div>
+            <div className="stat-tile"><span>Profit opportunity rate</span><strong>{buyPerformance?.metrics.opportunity_rate_percent !== null && buyPerformance?.metrics.opportunity_rate_percent !== undefined ? `${buyPerformance.metrics.opportunity_rate_percent.toFixed(1)}%` : '-'}</strong><small>Reached at least +1% in 24h</small></div>
+            <div className="stat-tile"><span>Average max upside</span><strong>{buyPerformance?.metrics.average_mfe_percent !== null && buyPerformance?.metrics.average_mfe_percent !== undefined ? `${buyPerformance.metrics.average_mfe_percent >= 0 ? '+' : ''}${buyPerformance.metrics.average_mfe_percent.toFixed(2)}%` : '-'}</strong><small>Maximum favorable excursion</small></div>
+          </div>
+          <div className="grid gap-3 md:grid-cols-3">
+            <div className="stat-tile"><span>Legacy BUY excluded</span><strong>{buyPerformance?.metrics.legacy_buy_signals_excluded ?? 0}</strong><small>Old algorithm remains on-chain</small></div>
+            <div className="stat-tile"><span>Average 24h close</span><strong>{buyPerformance?.metrics.average_return_percent !== null && buyPerformance?.metrics.average_return_percent !== undefined ? `${buyPerformance.metrics.average_return_percent >= 0 ? '+' : ''}${buyPerformance.metrics.average_return_percent.toFixed(2)}%` : '-'}</strong><small>{buyPerformance?.metrics.reversed_signals ?? 0} reversed after opportunity</small></div>
+            <div className="stat-tile"><span>Pending BUY signals</span><strong>{buyPerformance?.metrics.pending_signals ?? 0}</strong><small>Waiting for full 24h path</small></div>
           </div>
           <div className="glass-panel p-5">
             <div className="mb-4 flex items-center justify-between gap-4">
@@ -1915,9 +2092,31 @@ function App() {
             )}
           </div>
           <div className="glass-panel p-6">
-            <div className="font-mono text-[10px] uppercase tracking-[0.28em] text-cyan-200">Performance pipeline</div>
-            <h3 className="mt-2 text-xl font-semibold text-white">Verified results are coming next</h3>
-            <p className="mt-3 max-w-3xl text-sm text-slate-400">BUY and SELL decisions are now available. The next release will store evaluation windows, calculate realized outcomes, and publish directional accuracy without counting HOLD decisions as wins.</p>
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <div className="font-mono text-[10px] uppercase tracking-[0.28em] text-cyan-200">Verified BUY outcomes</div>
+                <h3 className="mt-2 text-xl font-semibold text-white">24-Hour Public Track Record</h3>
+                <p className="mt-3 max-w-3xl text-sm text-slate-400">Only immutable BUY signals recorded after the strict quality-gate launch are tracked. Legacy BUY and HOLD are excluded. Five-minute candles across the full 24-hour path show whether price offered at least +1% upside, later reversed, or never produced a tradeable opportunity.</p>
+              </div>
+              <button onClick={loadSignals} disabled={loadingSignals || performanceLoading} className="ghost-button px-3 py-2 text-xs disabled:opacity-50">{performanceLoading ? 'Evaluating...' : 'Refresh results'}</button>
+            </div>
+            {performanceError && <div className="alert-card mt-4 p-3 text-sm text-red-200">{performanceError}</div>}
+            <div className="performance-results mt-5">
+              {performanceLoading ? (
+                <div className="empty-state p-5 text-center text-sm text-slate-400">Evaluating on-chain BUY signals against market candles...</div>
+              ) : !buyPerformance?.evaluations.length ? (
+                <div className="empty-state p-5 text-center text-sm text-slate-400">No on-chain BUY signals available for evaluation yet.</div>
+              ) : buyPerformance.evaluations.map((evaluation) => (
+                <div key={`${evaluation.trader}-${evaluation.signal_timestamp}`} className="performance-result-row">
+                  <div><strong>{evaluation.symbol}</strong><span>BUY · conf {evaluation.confidence}%</span></div>
+                  <div><span>Entry</span><strong>{formatMarketPrice(evaluation.entry_price)}</strong></div>
+                  <div><span>Max upside</span><strong className={(evaluation.mfe_percent ?? 0) >= 0 ? 'positive' : 'negative'}>{evaluation.mfe_percent !== null ? `${evaluation.mfe_percent >= 0 ? '+' : ''}${evaluation.mfe_percent.toFixed(2)}%` : '-'}</strong></div>
+                  <div><span>Max drawdown</span><strong className={(evaluation.mae_percent ?? 0) >= 0 ? 'positive' : 'negative'}>{evaluation.mae_percent !== null ? `${evaluation.mae_percent >= 0 ? '+' : ''}${evaluation.mae_percent.toFixed(2)}%` : '-'}</strong></div>
+                  <div><span>24h close</span><strong className={(evaluation.return_percent ?? 0) >= 0 ? 'positive' : 'negative'}>{evaluation.return_percent !== null ? `${evaluation.return_percent >= 0 ? '+' : ''}${evaluation.return_percent.toFixed(2)}%` : '-'}</strong></div>
+                  <div><span>Outcome</span><strong className={`outcome ${evaluation.outcome?.toLowerCase() || evaluation.status}`}>{evaluation.outcome?.replace('_', ' ') || evaluation.status}</strong></div>
+                </div>
+              ))}
+            </div>
           </div>
         </section>
 

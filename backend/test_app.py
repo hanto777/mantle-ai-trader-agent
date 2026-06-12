@@ -270,6 +270,80 @@ class TestMarketCatalog(unittest.TestCase):
         self.assertIn("downside room", result["reason"])
         self.assertIn("invalidation level", result["reason"])
 
+    def test_buy_quality_gate_accepts_aligned_setup_with_good_reward_risk(self):
+        analysis = {
+            "action": "BUY",
+            "confidence": 0.82,
+            "support_price": 98.0,
+            "resistance_price": 104.0,
+            "reason": "Aligned bullish setup",
+        }
+        indicators = {
+            "1h": {"macd_state": "bullish", "rsi_state": "neutral", "stochastic_state": "neutral"},
+            "4h": {"macd_state": "bullish", "rsi_state": "neutral", "stochastic_state": "neutral"},
+        }
+
+        result = app.apply_signal_quality_gate(analysis, indicators, 100.0, "1h", "4h")
+
+        self.assertEqual(result["action"], "BUY")
+        self.assertTrue(result["quality_gate"]["passed"])
+        self.assertEqual(result["quality_gate"]["reward_risk"], 2.0)
+
+    def test_buy_quality_gate_downgrades_low_confidence_buy(self):
+        analysis = {
+            "action": "BUY",
+            "confidence": 0.55,
+            "support_price": 98.0,
+            "resistance_price": 104.0,
+            "reason": "Possible bounce",
+        }
+        indicators = {
+            "1h": {"macd_state": "bullish", "rsi_state": "neutral", "stochastic_state": "neutral"},
+            "4h": {"macd_state": "bullish", "rsi_state": "neutral", "stochastic_state": "neutral"},
+        }
+
+        result = app.apply_signal_quality_gate(analysis, indicators, 100.0, "1h", "4h")
+
+        self.assertEqual(result["action"], "HOLD")
+        self.assertIn("below 70%", result["reason"])
+
+    def test_buy_quality_gate_requires_both_timeframes_and_reward_risk(self):
+        analysis = {
+            "action": "BUY",
+            "confidence": 0.90,
+            "support_price": 95.0,
+            "resistance_price": 102.0,
+            "reason": "Weak bullish attempt",
+        }
+        indicators = {
+            "1h": {"macd_state": "bullish", "rsi_state": "neutral", "stochastic_state": "neutral"},
+            "4h": {"macd_state": "bearish", "rsi_state": "neutral", "stochastic_state": "neutral"},
+        }
+
+        result = app.apply_signal_quality_gate(analysis, indicators, 100.0, "1h", "4h")
+
+        self.assertEqual(result["action"], "HOLD")
+        self.assertIn("4H MACD", result["reason"])
+        self.assertIn("reward/risk", result["reason"])
+
+    def test_buy_quality_gate_rejects_double_overbought_setup(self):
+        analysis = {
+            "action": "BUY",
+            "confidence": 0.90,
+            "support_price": 98.0,
+            "resistance_price": 104.0,
+            "reason": "Late bullish setup",
+        }
+        indicators = {
+            "1h": {"macd_state": "bullish", "rsi_state": "overbought", "stochastic_state": "overbought"},
+            "4h": {"macd_state": "bullish", "rsi_state": "overbought", "stochastic_state": "overbought"},
+        }
+
+        result = app.apply_signal_quality_gate(analysis, indicators, 100.0, "1h", "4h")
+
+        self.assertEqual(result["action"], "HOLD")
+        self.assertIn("overbought", result["reason"])
+
 
 class TestTechnicalIndicators(unittest.TestCase):
     @staticmethod
@@ -385,6 +459,104 @@ class TestAnalysisModes(unittest.TestCase):
         self.assertEqual(app.timeframe_display_name("1w"), "ONE WEEK (1W)")
         self.assertEqual(app.timeframe_display_name("1M"), "ONE MONTH (1M, not 1 minute)")
         self.assertEqual(app.timeframe_display_name("1m"), "ONE MINUTE (1m)")
+
+
+class TestBuyPerformanceEvaluation(unittest.IsolatedAsyncioTestCase):
+    async def test_pending_buy_is_not_evaluated(self):
+        signal = app.PerformanceSignalRequest(
+            symbol="MNT/USDT",
+            action="BUY",
+            price=50_000_000,
+            confidence=75,
+            timestamp=1_000,
+        )
+
+        result = await app.evaluate_buy_signal(signal, 1_000 + app.BUY_EVALUATION_WINDOW_SECONDS - 1)
+
+        self.assertEqual(result["status"], "pending")
+        self.assertIsNone(result["outcome"])
+
+    async def test_completed_buy_detects_profit_opportunity(self):
+        signal = app.PerformanceSignalRequest(
+            symbol="MNT/USDT",
+            action="BUY",
+            price=50_000_000,
+            confidence=75,
+            timestamp=1_000,
+        )
+        candles = [
+            [1_000_000, 0.50, 0.51, 0.49, 0.50, 1],
+            [87_400_000, 0.50, 0.56, 0.50, 0.55, 1],
+        ]
+        with patch.object(app, "fetch_evaluation_window", return_value=(candles, "bybit")):
+            result = await app.evaluate_buy_signal(signal, 100_000)
+
+        self.assertEqual(result["status"], "evaluated")
+        self.assertEqual(result["outcome"], "PROFIT_OPPORTUNITY")
+        self.assertEqual(result["return_percent"], 10.0)
+        self.assertEqual(result["mfe_percent"], 12.0)
+        self.assertEqual(result["mae_percent"], -2.0)
+
+    async def test_completed_buy_detects_reversal_after_profit_opportunity(self):
+        signal = app.PerformanceSignalRequest(
+            symbol="MNT/USDT", action="BUY", price=50_000_000, confidence=75, timestamp=1_000
+        )
+        candles = [
+            [1_000_000, 0.50, 0.52, 0.49, 0.51, 1],
+            [87_400_000, 0.51, 0.53, 0.47, 0.48, 1],
+        ]
+        with patch.object(app, "fetch_evaluation_window", return_value=(candles, "bybit")):
+            result = await app.evaluate_buy_signal(signal, 100_000)
+
+        self.assertEqual(result["outcome"], "REVERSED")
+        self.assertEqual(result["mfe_percent"], 6.0)
+        self.assertEqual(result["return_percent"], -4.0)
+
+    async def test_completed_buy_detects_clean_loss(self):
+        signal = app.PerformanceSignalRequest(
+            symbol="MNT/USDT", action="BUY", price=50_000_000, confidence=75, timestamp=1_000
+        )
+        candles = [
+            [1_000_000, 0.50, 0.503, 0.48, 0.49, 1],
+            [87_400_000, 0.49, 0.50, 0.47, 0.48, 1],
+        ]
+        with patch.object(app, "fetch_evaluation_window", return_value=(candles, "bybit")):
+            result = await app.evaluate_buy_signal(signal, 100_000)
+
+        self.assertEqual(result["outcome"], "LOSS")
+        self.assertEqual(result["mfe_percent"], 0.6)
+
+    async def test_performance_tracker_excludes_legacy_buy_signals(self):
+        legacy = app.PerformanceSignalRequest(
+            symbol="MNT/USDT",
+            action="BUY",
+            price=50_000_000,
+            confidence=55,
+            timestamp=app.PERFORMANCE_TRACKING_START_TIMESTAMP - 1,
+        )
+        current = app.PerformanceSignalRequest(
+            symbol="MNT/USDT",
+            action="BUY",
+            price=50_000_000,
+            confidence=75,
+            timestamp=app.PERFORMANCE_TRACKING_START_TIMESTAMP,
+        )
+        evaluation = {
+            "status": "evaluated",
+            "outcome": "PROFIT_OPPORTUNITY",
+            "return_percent": 2.0,
+            "mfe_percent": 3.0,
+            "mae_percent": -1.0,
+            "signal_timestamp": current.timestamp,
+        }
+
+        with patch.object(app, "evaluate_buy_signal", new=unittest.mock.AsyncMock(return_value=evaluation)) as evaluate:
+            result = await app.performance_evaluate(app.PerformanceEvaluateRequest(signals=[legacy, current]))
+
+        self.assertEqual(evaluate.await_count, 1)
+        self.assertEqual(result["metrics"]["tracked_buy_signals"], 1)
+        self.assertEqual(result["metrics"]["legacy_buy_signals_excluded"], 1)
+        self.assertEqual(result["methodology"]["tracking_start_timestamp"], app.PERFORMANCE_TRACKING_START_TIMESTAMP)
 
 
 class TestGeminiModelFallback(unittest.IsolatedAsyncioTestCase):

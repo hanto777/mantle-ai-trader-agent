@@ -130,6 +130,19 @@ class AnalyzeRequest(BaseModel):
     message: Optional[str] = None
 
 
+class PerformanceSignalRequest(BaseModel):
+    symbol: str
+    action: str
+    price: int = Field(..., gt=0)
+    confidence: int = Field(..., ge=0, le=100)
+    timestamp: int = Field(..., gt=0)
+    trader: Optional[str] = None
+
+
+class PerformanceEvaluateRequest(BaseModel):
+    signals: list[PerformanceSignalRequest] = Field(default_factory=list, max_length=100)
+
+
 # ===== Global State =====
 
 account = PaperAccount()
@@ -148,6 +161,14 @@ ANALYSIS_MODES = {
 }
 SUPPORTED_MARKET_TIMEFRAMES = {mode["entry"] for mode in ANALYSIS_MODES.values()}
 MIN_ANALYSIS_CANDLES = 35
+BUY_EVALUATION_WINDOW_SECONDS = 24 * 60 * 60
+BUY_PROFIT_OPPORTUNITY_THRESHOLD_PERCENT = 1.0
+BUY_EVALUATION_TIMEFRAME = "5m"
+BUY_EVALUATION_CANDLE_SECONDS = 5 * 60
+BUY_MIN_CONFIDENCE = 0.70
+BUY_MIN_UPSIDE_PERCENT = 2.0
+BUY_MIN_REWARD_RISK = 1.5
+PERFORMANCE_TRACKING_START_TIMESTAMP = int(os.getenv("PERFORMANCE_TRACKING_START_TIMESTAMP", "1781280465"))
 
 
 def timeframe_display_name(timeframe: str) -> str:
@@ -324,13 +345,76 @@ def apply_signal_quality_gate(
     entry_timeframe: str = "1h",
     trend_timeframe: str = "1d",
 ) -> dict:
-    """Downgrade weak SELL calls to HOLD instead of presenting an unsupported exit signal."""
-    if analysis.get("action") != "SELL":
+    """Downgrade weak directional calls to HOLD before presenting or recording them."""
+    action = analysis.get("action")
+    if action not in {"BUY", "SELL"}:
         return analysis
 
     entry_indicators = indicators.get(entry_timeframe, {})
     trend_indicators = indicators.get(trend_timeframe, {})
     rejection_reasons = []
+    quality_details = {}
+
+    if action == "BUY":
+        if analysis.get("confidence", 0) < BUY_MIN_CONFIDENCE:
+            rejection_reasons.append(f"BUY confidence is below {BUY_MIN_CONFIDENCE:.0%}")
+        if trend_indicators.get("macd_state") != "bullish":
+            rejection_reasons.append(f"the {trend_timeframe.upper()} MACD does not confirm a bullish trend")
+        if entry_indicators.get("macd_state") != "bullish":
+            rejection_reasons.append(f"the {entry_timeframe.upper()} MACD does not confirm bullish entry timing")
+        if trend_indicators.get("rsi_state") == "overbought" and entry_indicators.get("rsi_state") == "overbought":
+            rejection_reasons.append("both timeframes are already RSI-overbought")
+        if (
+            trend_indicators.get("stochastic_state") == "overbought"
+            and entry_indicators.get("stochastic_state") == "overbought"
+        ):
+            rejection_reasons.append("both timeframes are already Stochastic-overbought")
+        if current_price:
+            support = float(analysis.get("support_price", 0))
+            resistance = float(analysis.get("resistance_price", 0))
+            risk = current_price - support
+            reward = resistance - current_price
+            upside_percent = reward / current_price * 100 if current_price > 0 else 0
+            reward_risk = reward / risk if risk > 0 else 0
+            quality_details = {
+                "upside_percent": round(upside_percent, 2),
+                "reward_risk": round(reward_risk, 2),
+            }
+            if support <= 0 or support >= current_price:
+                rejection_reasons.append("support does not provide a valid BUY invalidation level")
+            if resistance <= current_price:
+                rejection_reasons.append("resistance does not provide valid upside room")
+            elif upside_percent < BUY_MIN_UPSIDE_PERCENT:
+                rejection_reasons.append(f"upside to resistance is below {BUY_MIN_UPSIDE_PERCENT:.0f}%")
+            if risk <= 0 or reward_risk < BUY_MIN_REWARD_RISK:
+                rejection_reasons.append(f"reward/risk is below {BUY_MIN_REWARD_RISK:.1f}")
+
+        if not rejection_reasons:
+            return {
+                **analysis,
+                "quality_gate": {
+                    "passed": True,
+                    "original_action": "BUY",
+                    **quality_details,
+                },
+            }
+
+        original_reason = analysis.get("reason", "")
+        return {
+            **analysis,
+            "action": "HOLD",
+            "reason": (
+                f"BUY was not confirmed because {', '.join(rejection_reasons)}. "
+                f"The safer decision is HOLD. Original market assessment: {original_reason}"
+            ),
+            "quality_gate": {
+                "passed": False,
+                "original_action": "BUY",
+                "rejection_reasons": rejection_reasons,
+                **quality_details,
+            },
+        }
+
     if analysis.get("confidence", 0) < 0.70:
         rejection_reasons.append("SELL confidence is below 70%")
     if trend_indicators.get("macd_state") != "bearish":
@@ -350,7 +434,13 @@ def apply_signal_quality_gate(
             rejection_reasons.append("resistance does not provide a valid bearish invalidation level")
 
     if not rejection_reasons:
-        return analysis
+        return {
+            **analysis,
+            "quality_gate": {
+                "passed": True,
+                "original_action": "SELL",
+            },
+        }
 
     original_reason = analysis.get("reason", "")
     return {
@@ -360,6 +450,11 @@ def apply_signal_quality_gate(
             f"SELL was not confirmed because {', '.join(rejection_reasons)}. "
             f"The safer decision is HOLD. Original market assessment: {original_reason}"
         ),
+        "quality_gate": {
+            "passed": False,
+            "original_action": "SELL",
+            "rejection_reasons": rejection_reasons,
+        },
     }
 
 
@@ -683,6 +778,95 @@ async def fetch_candles(symbol: str, timeframe: str = "1h", limit: int = 102) ->
         except Exception as exc:
             errors.append(f"{source}: {exc}")
     raise HTTPException(status_code=502, detail=f"Failed to fetch candles. {'; '.join(errors)}")
+
+
+async def fetch_evaluation_window(symbol: str, signal_timestamp: int, evaluation_timestamp: int) -> tuple[list, str]:
+    errors = []
+    since_ms = signal_timestamp * 1000
+    evaluation_ms = evaluation_timestamp * 1000
+    providers = (
+        ("bybit", None, "bybit"),
+        ("bybit", "bytick.com", "bybit-bytick"),
+        ("bingx", None, "bingx"),
+    )
+    for exchange_id, hostname, source in providers:
+        try:
+            exchange = create_spot_exchange(exchange_id, hostname)
+            candles = await run_in_threadpool(exchange.fetch_ohlcv, symbol, BUY_EVALUATION_TIMEFRAME, since_ms, 300)
+            eligible = [candle for candle in candles if since_ms <= int(candle[0]) <= evaluation_ms]
+            if not eligible or int(eligible[-1][0]) < evaluation_ms - BUY_EVALUATION_CANDLE_SECONDS * 1000:
+                raise ValueError("Complete 24-hour candle window was not returned")
+            return eligible, source
+        except Exception as exc:
+            errors.append(f"{source}: {exc}")
+    raise ValueError("; ".join(errors))
+
+
+async def evaluate_buy_signal(signal: PerformanceSignalRequest, now_timestamp: int) -> dict:
+    symbol = normalize_symbol(signal.symbol)
+    entry_price = signal.price / 1e8
+    evaluation_at = signal.timestamp + BUY_EVALUATION_WINDOW_SECONDS
+    base = {
+        "symbol": symbol,
+        "action": "BUY",
+        "entry_price": round(entry_price, 8),
+        "confidence": signal.confidence,
+        "signal_timestamp": signal.timestamp,
+        "evaluation_at": evaluation_at,
+        "trader": signal.trader,
+    }
+    if evaluation_at > now_timestamp:
+        return {
+            **base,
+            "status": "pending",
+            "evaluation_price": None,
+            "return_percent": None,
+            "mfe_percent": None,
+            "mae_percent": None,
+            "outcome": None,
+        }
+
+    try:
+        candles, source = await fetch_evaluation_window(symbol, signal.timestamp, evaluation_at)
+    except Exception as exc:
+        return {
+            **base,
+            "status": "unavailable",
+            "evaluation_price": None,
+            "return_percent": None,
+            "mfe_percent": None,
+            "mae_percent": None,
+            "outcome": None,
+            "error": str(exc),
+        }
+
+    evaluation_candle = candles[-1]
+    evaluation_price = float(evaluation_candle[4])
+    evaluated_timestamp = int(evaluation_candle[0] // 1000)
+    max_price = max(float(candle[2]) for candle in candles)
+    min_price = min(float(candle[3]) for candle in candles)
+    return_percent = (evaluation_price / entry_price - 1) * 100
+    mfe_percent = (max_price / entry_price - 1) * 100
+    mae_percent = (min_price / entry_price - 1) * 100
+    if mfe_percent >= BUY_PROFIT_OPPORTUNITY_THRESHOLD_PERCENT:
+        outcome = "PROFIT_OPPORTUNITY" if return_percent >= 0 else "REVERSED"
+    elif return_percent < 0:
+        outcome = "LOSS"
+    else:
+        outcome = "FLAT"
+    return {
+        **base,
+        "status": "evaluated",
+        "evaluation_price": round(evaluation_price, 8),
+        "evaluated_timestamp": evaluated_timestamp,
+        "return_percent": round(return_percent, 2),
+        "max_price": round(max_price, 8),
+        "min_price": round(min_price, 8),
+        "mfe_percent": round(mfe_percent, 2),
+        "mae_percent": round(mae_percent, 2),
+        "outcome": outcome,
+        "source": source,
+    }
 
 
 def calculate_indicators(ohlcv: list) -> dict:
@@ -1034,7 +1218,9 @@ async def get_gemini_analysis(symbol: str, analysis_mode: str = "intraday") -> d
         f"This is a {mode['label']} analysis. The {trend_timeframe_label} timeframe defines the broader trend; "
         f"the {entry_timeframe_label} timeframe helps time an entry or exit. "
         "Explicitly consider whether RSI and Stochastic are overbought/oversold and whether MACD is bullish/bearish. "
-        "Return BUY only for a clearly confirmed bullish setup with upside room toward resistance. "
+        f"Return BUY only when confidence is at least {BUY_MIN_CONFIDENCE:.0%}, MACD is bullish on both timeframes, "
+        f"upside toward resistance is at least {BUY_MIN_UPSIDE_PERCENT:.0f}%, and reward/risk from support to resistance "
+        f"is at least {BUY_MIN_REWARD_RISK:.1f}. "
         f"Return SELL only for a clearly confirmed bearish setup where both {trend_timeframe_label} and "
         f"{entry_timeframe_label} support the exit, "
         "there is downside room toward support, and the market is not already exhausted in deep oversold conditions. "
@@ -1141,7 +1327,7 @@ async def get_gemini_analysis(symbol: str, analysis_mode: str = "intraday") -> d
             entry_timeframe: len(ohlcv),
             trend_timeframe: len(trend_ohlcv),
         }
-        return apply_signal_quality_gate(result, indicators, float(ohlcv[-1][4]), entry_timeframe, trend_timeframe)
+        return apply_signal_quality_gate(result, indicators, current_reference_price, entry_timeframe, trend_timeframe)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Failed to parse Gemini response: {exc}")
 
@@ -1394,6 +1580,44 @@ async def ai_status():
     configured = bool(os.getenv("GEMINI_API_KEY"))
     model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
     return {"configured": configured, "model": model}
+
+
+@app.post("/api/performance/evaluate")
+async def performance_evaluate(request: PerformanceEvaluateRequest):
+    all_buy_signals = [signal for signal in request.signals if signal.action.strip().upper() == "BUY"]
+    buy_signals = [signal for signal in all_buy_signals if signal.timestamp >= PERFORMANCE_TRACKING_START_TIMESTAMP]
+    now_timestamp = int(time.time())
+    evaluations = await asyncio.gather(*(evaluate_buy_signal(signal, now_timestamp) for signal in buy_signals))
+    evaluated = [item for item in evaluations if item["status"] == "evaluated"]
+    opportunities = [item for item in evaluated if item["outcome"] in {"PROFIT_OPPORTUNITY", "REVERSED"}]
+    average_return = sum(float(item["return_percent"]) for item in evaluated) / len(evaluated) if evaluated else 0.0
+    average_mfe = sum(float(item["mfe_percent"]) for item in evaluated) / len(evaluated) if evaluated else 0.0
+    average_mae = sum(float(item["mae_percent"]) for item in evaluated) / len(evaluated) if evaluated else 0.0
+    return {
+        "methodology": {
+            "tracked_action": "BUY",
+            "evaluation_window_hours": BUY_EVALUATION_WINDOW_SECONDS // 3600,
+            "evaluation_timeframe": BUY_EVALUATION_TIMEFRAME,
+            "tracking_start_timestamp": PERFORMANCE_TRACKING_START_TIMESTAMP,
+            "profit_opportunity_threshold_percent": BUY_PROFIT_OPPORTUNITY_THRESHOLD_PERCENT,
+            "outcome_rule": "Tracks BUY signals created after the strict quality-gate launch across their full 24-hour candle path. Legacy BUY and HOLD signals are excluded.",
+        },
+        "metrics": {
+            "tracked_buy_signals": len(evaluations),
+            "legacy_buy_signals_excluded": len(all_buy_signals) - len(buy_signals),
+            "evaluated_signals": len(evaluated),
+            "pending_signals": sum(item["status"] == "pending" for item in evaluations),
+            "unavailable_signals": sum(item["status"] == "unavailable" for item in evaluations),
+            "profit_opportunities": len(opportunities),
+            "reversed_signals": sum(item["outcome"] == "REVERSED" for item in evaluated),
+            "losses": sum(item["outcome"] == "LOSS" for item in evaluated),
+            "opportunity_rate_percent": round(len(opportunities) / len(evaluated) * 100, 1) if evaluated else None,
+            "average_mfe_percent": round(average_mfe, 2) if evaluated else None,
+            "average_mae_percent": round(average_mae, 2) if evaluated else None,
+            "average_return_percent": round(average_return, 2) if evaluated else None,
+        },
+        "evaluations": sorted(evaluations, key=lambda item: item["signal_timestamp"], reverse=True),
+    }
 
 
 @app.get("/api/billing/status")
