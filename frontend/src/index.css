@@ -792,6 +792,8 @@ button {
 .historical-rsi-balance { position: relative; display: flex; justify-content: space-between; overflow: hidden; border-radius: 999px; padding-top: 13px; color: #94a3b8; font: 700 9px ui-monospace, SFMono-Regular, Menlo, monospace; text-transform: uppercase; }
 .historical-rsi-balance::before { content: ''; position: absolute; top: 0; left: 0; width: 100%; height: 7px; border-radius: 999px; background: #f87171; opacity: .62; }
 .historical-rsi-balance > div { position: absolute; top: 0; left: 0; z-index: 1; height: 7px; border-radius: 999px 0 0 999px; background: #34d399; box-shadow: 0 0 14px rgba(52, 211, 153, .65); }
+.historical-rsi-balance.insufficient { justify-content: flex-start; }
+.historical-rsi-balance.insufficient::before { background: linear-gradient(90deg, rgba(100, 116, 139, .3), rgba(148, 163, 184, .75), rgba(100, 116, 139, .3)); opacity: 1; }
 
 .historical-rsi-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
 .historical-rsi-metrics > div { border: 1px solid rgba(103, 232, 249, .12); border-radius: 9px; padding: 11px; background: rgba(2, 8, 23, .46); }
@@ -826,6 +828,75 @@ button {
 .indicator-row em.bearish,
 .indicator-row em.overbought,
 .indicator-state.overbought { color: #fca5a5; background: rgba(248, 113, 113, .1); }
+
+.timeframe-level-zone {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+  border-top: 1px solid rgba(103, 232, 249, .1);
+  padding-top: 10px;
+}
+
+.timeframe-level-reference {
+  display: flex;
+  grid-column: 1 / -1;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: #64748b;
+  font: 800 8px ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+
+.timeframe-level-reference strong {
+  color: #cbd5e1;
+  font-size: 10px;
+}
+
+.timeframe-level {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid rgba(103, 232, 249, .14);
+  border-radius: 9px;
+  padding: 10px;
+  background: radial-gradient(circle at 18% 20%, rgba(103, 232, 249, .12), transparent 34%), rgba(2, 8, 23, .52);
+}
+
+.timeframe-level::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: var(--level-accent);
+  box-shadow: 0 0 18px var(--level-glow);
+}
+
+.timeframe-level.support { --level-accent: #34d399; --level-glow: rgba(52, 211, 153, .42); }
+.timeframe-level.resistance { --level-accent: #f87171; --level-glow: rgba(248, 113, 113, .38); }
+
+.timeframe-level span,
+.timeframe-level small {
+  display: block;
+  color: #94a3b8;
+  font: 800 8px ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+
+.timeframe-level strong {
+  display: block;
+  margin-top: 5px;
+  color: var(--level-accent);
+  font: 800 14px ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-shadow: 0 0 14px var(--level-glow);
+}
+
+.timeframe-level small {
+  margin-top: 4px;
+  letter-spacing: .06em;
+}
 
 .stat-tile,
 .risk-panel,

@@ -297,6 +297,55 @@ class TestTechnicalIndicators(unittest.TestCase):
         self.assertEqual(result["stochastic_d"], 50.0)
         self.assertEqual(result["stochastic_state"], "neutral")
 
+    def test_calculate_timeframe_levels_returns_local_boundaries(self):
+        closes = [100, 101, 102, 101, 99, 98, 100, 103, 105, 104, 102, 101, 103]
+
+        result = app.calculate_timeframe_levels(self.make_candles(closes))
+
+        self.assertEqual(result["current_price"], 103)
+        self.assertLess(result["support_price"], result["current_price"])
+        self.assertGreater(result["resistance_price"], result["current_price"])
+        self.assertIn("support_distance_percent", result)
+        self.assertIn("resistance_distance_percent", result)
+        self.assertIn(result["support_role"], {"demand", "former_resistance"})
+        self.assertIn(result["resistance_role"], {"supply", "former_support"})
+
+    def test_calculate_timeframe_levels_uses_shared_current_price(self):
+        closes = [100, 101, 102, 101, 99, 98, 100, 103, 105, 104, 102, 101, 103]
+
+        result = app.calculate_timeframe_levels(self.make_candles(closes), current_price_override=99)
+
+        self.assertEqual(result["current_price"], 99)
+        self.assertLessEqual(result["support_price"], 99)
+        self.assertGreaterEqual(result["resistance_price"], 99)
+
+    def test_build_timeframe_context_digitizes_chart_data(self):
+        candles = self.make_candles([100 + index for index in range(80)])
+        indicators = app.calculate_indicators(candles)
+        reference = app.calculate_timeframe_levels(candles, current_price_override=180)
+
+        result = app.build_timeframe_context("4h", candles, indicators, 180, reference)
+
+        self.assertEqual(result["timeframe"], "4h")
+        self.assertEqual(result["live_spot_price"], 180)
+        self.assertEqual(len(result["recent_ohlcv"]), 60)
+        self.assertEqual(result["indicators"], indicators)
+
+    def test_validate_ai_timeframe_levels_keeps_valid_visual_levels(self):
+        reference = app.calculate_timeframe_levels(
+            self.make_candles([100, 101, 102, 101, 99, 98, 100, 103, 105, 104, 102, 101, 103]),
+            current_price_override=103,
+        )
+
+        result = app.validate_ai_timeframe_levels(
+            {"1h": {"support_price": 100, "resistance_price": 106}},
+            {"1h": reference},
+        )
+
+        self.assertEqual(result["1h"]["support_price"], 100)
+        self.assertEqual(result["1h"]["resistance_price"], 106)
+        self.assertEqual(result["1h"]["level_source"], "gemini")
+
     def test_historical_setup_match_returns_expected_shape(self):
         closes = [100 + (index % 20) * 0.5 + index * 0.03 for index in range(220)]
 
@@ -311,6 +360,7 @@ class TestTechnicalIndicators(unittest.TestCase):
         result = app.calculate_historical_setup_match(self.make_candles([100.0] * 40))
 
         self.assertEqual(result["signal"], "insufficient")
+        self.assertEqual(result["insufficient_reason"], "insufficient_history")
         self.assertEqual(result["similar_cases"], 0)
 
 
@@ -324,10 +374,17 @@ class TestAnalysisModes(unittest.TestCase):
         self.assertEqual(app.ANALYSIS_MODES["swing"]["trend"], "1d")
         self.assertEqual(app.ANALYSIS_MODES["position"]["entry"], "1d")
         self.assertEqual(app.ANALYSIS_MODES["position"]["trend"], "1w")
+        self.assertEqual(app.ANALYSIS_MODES["macro"]["entry"], "1w")
+        self.assertEqual(app.ANALYSIS_MODES["macro"]["trend"], "1M")
 
     def test_supported_chart_timeframes_match_mode_entries(self):
-        self.assertEqual(app.SUPPORTED_MARKET_TIMEFRAMES, {"15m", "1h", "4h", "1d"})
+        self.assertEqual(app.SUPPORTED_MARKET_TIMEFRAMES, {"15m", "1h", "4h", "1d", "1w"})
         self.assertEqual(app.MIN_ANALYSIS_CANDLES, 35)
+
+    def test_timeframe_display_name_distinguishes_month_from_minute(self):
+        self.assertEqual(app.timeframe_display_name("1w"), "ONE WEEK (1W)")
+        self.assertEqual(app.timeframe_display_name("1M"), "ONE MONTH (1M, not 1 minute)")
+        self.assertEqual(app.timeframe_display_name("1m"), "ONE MINUTE (1m)")
 
 
 class TestGeminiModelFallback(unittest.IsolatedAsyncioTestCase):

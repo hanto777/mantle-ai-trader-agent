@@ -20,13 +20,14 @@ const FEATURED_MARKETS = [
 
 const MARKET_SOURCE_LABEL = 'Live Spot Market'
 
-type AnalysisMode = 'scalping' | 'intraday' | 'swing' | 'position'
+type AnalysisMode = 'scalping' | 'intraday' | 'swing' | 'position' | 'macro'
 
 const ANALYSIS_MODES: Record<AnalysisMode, { label: string; entry: string; trend: string; description: string }> = {
   scalping: { label: 'Scalping', entry: '15m', trend: '1h', description: 'Fast entries with hourly trend confirmation' },
   intraday: { label: 'Intraday', entry: '1h', trend: '4h', description: 'Same-day setups with broader session context' },
   swing: { label: 'Swing', entry: '4h', trend: '1d', description: 'Multi-day setups filtered by the daily trend' },
   position: { label: 'Position', entry: '1d', trend: '1w', description: 'Long-horizon decisions with weekly context' },
+  macro: { label: 'Macro', entry: '1w', trend: '1M', description: 'Weekly structure with monthly market-cycle context' },
 }
 
 const ANALYSIS_MODE_BY_ENTRY: Record<string, AnalysisMode> = {
@@ -34,6 +35,7 @@ const ANALYSIS_MODE_BY_ENTRY: Record<string, AnalysisMode> = {
   '1h': 'intraday',
   '4h': 'swing',
   '1d': 'position',
+  '1w': 'macro',
 }
 
 const ANALYSIS_METHODS = [
@@ -114,8 +116,22 @@ type AIResult = {
     stochastic_d: number
     stochastic_state: string
   }>
+  timeframe_levels?: Record<string, {
+    current_price: number
+    support_price: number
+    resistance_price: number
+    support_distance_percent: number
+    resistance_distance_percent: number
+    support_status: 'below_price' | 'at_price'
+    resistance_status: 'above_price' | 'at_price'
+    support_role: 'demand' | 'former_resistance' | 'model_selected'
+    resistance_role: 'supply' | 'former_support' | 'model_selected'
+    price_reference: 'live_spot' | 'latest_closed_entry_candle'
+    level_source: 'gemini' | 'backend_fallback'
+  }>
   historical_setup?: {
     signal: 'bullish' | 'bearish' | 'neutral' | 'insufficient'
+    insufficient_reason?: 'insufficient_history' | 'no_reliable_match' | null
     similar_cases: number
     bullish_percent: number
     bearish_percent: number
@@ -228,6 +244,14 @@ function formatSignedCurrency(value: number) {
 
 function signalClass(action?: string) {
   return action === 'BUY' ? 'buy' : action === 'SELL' ? 'sell' : 'hold'
+}
+
+function formatLevelDistance(value: number, direction: 'below' | 'above') {
+  return Math.abs(value) < 0.01 ? 'at price' : `${value.toFixed(2)}% ${direction}`
+}
+
+function formatTimeframe(timeframe: string) {
+  return timeframe === '1M' ? '1 Month' : timeframe === '1w' ? '1 Week' : timeframe.toUpperCase()
 }
 
 function App() {
@@ -1093,6 +1117,8 @@ function App() {
     ?? selectedMode.trend
   const entryIndicators = aiResult?.indicators?.[resultEntryTimeframe]
   const trendIndicators = aiResult?.indicators?.[resultTrendTimeframe]
+  const entryLevels = aiResult?.timeframe_levels?.[resultEntryTimeframe]
+  const trendLevels = aiResult?.timeframe_levels?.[resultTrendTimeframe]
   const historicalSetup = aiResult?.historical_setup
   const totalVolume = candles.reduce((sum, candle) => sum + candle.volume, 0)
   const firstClose = candles[0]?.close ?? latestPrice ?? 0
@@ -1357,7 +1383,7 @@ function App() {
                       aria-label="Analysis timeframe"
                     >
                       {(Object.entries(ANALYSIS_MODES) as [AnalysisMode, typeof selectedMode][]).map(([mode, config]) => (
-                        <option key={mode} value={config.entry}>{config.entry.toUpperCase()}</option>
+                        <option key={mode} value={config.entry}>{formatTimeframe(config.entry)}</option>
                       ))}
                     </select>
                   </label>
@@ -1600,7 +1626,7 @@ function App() {
             <div className="ai-action-dock mt-3">
               <div>
                 <div className="font-mono text-[9px] uppercase tracking-[0.18em] text-cyan-300">{aiLoading ? 'Analysis in progress' : aiResult ? 'Run another analysis' : 'Ready for analysis'}</div>
-                <div className="mt-1 text-xs text-slate-400">{creditsRequired} credit · {selectedMode.entry.toUpperCase()} + {selectedMode.trend.toUpperCase()}</div>
+                <div className="mt-1 text-xs text-slate-400">{creditsRequired} credit · {formatTimeframe(selectedMode.entry)} + {formatTimeframe(selectedMode.trend)}</div>
               </div>
               <div className="flex gap-2">
                 {aiResult && (
@@ -1625,9 +1651,9 @@ function App() {
                 </div>
                 <p className="mt-4 text-sm leading-7 text-slate-200">{aiResult.reason}</p>
                 <div className="mt-4 grid gap-3 sm:grid-cols-3">
-                  <div className="explanation-fact"><span>Timeframes</span><strong>{resultEntryTimeframe.toUpperCase()} entry + {resultTrendTimeframe.toUpperCase()} trend</strong></div>
-                  <div className="explanation-fact"><span>{aiResult.action === 'SELL' ? 'Downside target' : 'Risk boundary'}</span><strong>{supportLevel ? `$${supportLevel.toFixed(6)}` : '-'}</strong></div>
-                  <div className="explanation-fact"><span>{aiResult.action === 'SELL' ? 'Bearish invalidation' : 'Upside reference'}</span><strong>{resistanceLevel ? `$${resistanceLevel.toFixed(6)}` : '-'}</strong></div>
+                  <div className="explanation-fact"><span>Timeframes</span><strong>{formatTimeframe(resultEntryTimeframe)} entry + {formatTimeframe(resultTrendTimeframe)} trend</strong></div>
+                  <div className="explanation-fact"><span>{formatTimeframe(resultEntryTimeframe)} levels</span><strong>{entryLevels ? `S $${entryLevels.support_price.toFixed(6)} / R $${entryLevels.resistance_price.toFixed(6)}` : '-'}</strong></div>
+                  <div className="explanation-fact"><span>{formatTimeframe(resultTrendTimeframe)} levels</span><strong>{trendLevels ? `S $${trendLevels.support_price.toFixed(6)} / R $${trendLevels.resistance_price.toFixed(6)}` : '-'}</strong></div>
                 </div>
               </div>
             ) : (
@@ -1660,16 +1686,16 @@ function App() {
                   <p className="mt-1 text-xs text-slate-400">{selectedMode.label} evidence from the entry and trend-filter timeframes.</p>
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  <span className="mini-badge violet">{resultEntryTimeframe.toUpperCase()} + {resultTrendTimeframe.toUpperCase()}</span>
+                  <span className="mini-badge violet">{formatTimeframe(resultEntryTimeframe)} + {formatTimeframe(resultTrendTimeframe)}</span>
                   {aiResult?.model && <span className="mini-badge">{aiResult.model}</span>}
                 </div>
               </div>
               {aiResult && (
                 <div className="indicator-grid mt-4">
                   {[
-                    { label: `${resultEntryTimeframe.toUpperCase()} entry timing`, values: entryIndicators },
-                    { label: `${resultTrendTimeframe.toUpperCase()} trend filter`, values: trendIndicators },
-                  ].map(({ label, values }) => (
+                    { label: `${formatTimeframe(resultEntryTimeframe)} entry timing`, values: entryIndicators, levels: entryLevels },
+                    { label: `${formatTimeframe(resultTrendTimeframe)} trend filter`, values: trendIndicators, levels: trendLevels },
+                  ].map(({ label, values, levels }) => (
                     <div key={label} className="indicator-card">
                       {values ? <>
                         <div className="mb-3 flex items-center justify-between gap-3">
@@ -1691,6 +1717,24 @@ function App() {
                           <strong>{values.stochastic_k.toFixed(1)} / {values.stochastic_d.toFixed(1)}</strong>
                           <em className={values.stochastic_state}>{values.stochastic_state}</em>
                         </div>
+                        {levels && (
+                          <div className="timeframe-level-zone">
+                            <div className="timeframe-level-reference">
+                              <span>{levels.level_source === 'gemini' ? 'Gemini visual levels' : 'Backend fallback levels'} · {levels.price_reference === 'live_spot' ? 'live spot' : 'closed candle'}</span>
+                              <strong>${levels.current_price.toFixed(6)}</strong>
+                            </div>
+                            <div className="timeframe-level support">
+                              <span>Support · {levels.support_role.replace('_', ' ')}</span>
+                              <strong>${levels.support_price.toFixed(6)}</strong>
+                              <small>{formatLevelDistance(levels.support_distance_percent, 'below')}</small>
+                            </div>
+                            <div className="timeframe-level resistance">
+                              <span>Resistance · {levels.resistance_role.replace('_', ' ')}</span>
+                              <strong>${levels.resistance_price.toFixed(6)}</strong>
+                              <small>{formatLevelDistance(levels.resistance_distance_percent, 'above')}</small>
+                            </div>
+                          </div>
+                        )}
                       </> : <>
                         <div className="mb-3 font-mono text-[10px] uppercase tracking-[0.16em] text-cyan-200">{label}</div>
                         <div className="empty-state p-4 text-center text-xs text-slate-400">Indicator evidence was not returned for this timeframe.</div>
@@ -1717,24 +1761,32 @@ function App() {
                     <div className="historical-rsi-heading">
                       <div>
                         <span>Historical RSI Signal</span>
-                        <h4>{historicalSetup.signal === 'insufficient' ? 'Awaiting more history' : `${historicalSetup.signal} bias`}</h4>
-                        <p>Current RSI context matched with MACD and Stochastic history on {resultEntryTimeframe.toUpperCase()}.</p>
+                        <h4>{historicalSetup.signal === 'insufficient'
+                          ? historicalSetup.insufficient_reason === 'insufficient_history' ? 'Awaiting More History' : 'No Reliable Historical Match'
+                          : `${historicalSetup.signal} bias`}</h4>
+                        <p>{historicalSetup.signal === 'insufficient'
+                          ? historicalSetup.insufficient_reason === 'insufficient_history'
+                            ? `Not enough closed ${formatTimeframe(resultEntryTimeframe)} candles to evaluate this RSI setup.`
+                            : `No statistically useful RSI, MACD, and Stochastic matches were found on ${formatTimeframe(resultEntryTimeframe)}.`
+                          : `Current RSI context matched with MACD and Stochastic history on ${formatTimeframe(resultEntryTimeframe)}.`}</p>
                       </div>
                       <strong className="historical-rsi-score">
-                        {historicalSetup.signal === 'bearish' ? historicalSetup.bearish_percent : historicalSetup.bullish_percent}%
+                        {historicalSetup.signal === 'insufficient' ? '—' : `${historicalSetup.signal === 'bearish' ? historicalSetup.bearish_percent : historicalSetup.bullish_percent}%`}
                         <small>{historicalSetup.signal}</small>
                       </strong>
                     </div>
-                    <div className="historical-rsi-balance">
-                      <div style={{ width: `${historicalSetup.bullish_percent}%` }} />
-                      <span>{historicalSetup.bullish_percent}% bullish</span>
-                      <span>{historicalSetup.bearish_percent}% bearish</span>
-                    </div>
+                    {historicalSetup.signal === 'insufficient'
+                      ? <div className="historical-rsi-balance insufficient"><span>Insufficient statistical confidence</span></div>
+                      : <div className="historical-rsi-balance">
+                          <div style={{ width: `${historicalSetup.bullish_percent}%` }} />
+                          <span>{historicalSetup.bullish_percent}% bullish</span>
+                          <span>{historicalSetup.bearish_percent}% bearish</span>
+                        </div>}
                     <div className="historical-rsi-metrics">
                       <div><span>Similar cases</span><strong>{historicalSetup.similar_cases}</strong></div>
                       <div><span>Average move</span><strong>{historicalSetup.average_move_percent >= 0 ? '+' : ''}{historicalSetup.average_move_percent.toFixed(2)}%</strong></div>
                       <div><span>Median move</span><strong>{historicalSetup.median_move_percent >= 0 ? '+' : ''}{historicalSetup.median_move_percent.toFixed(2)}%</strong></div>
-                      <div><span>Forward window</span><strong>{historicalSetup.evaluation_candles} candles</strong></div>
+                      <div><span>Forward window</span><strong>{historicalSetup.evaluation_candles} × {formatTimeframe(resultEntryTimeframe)} candles</strong></div>
                     </div>
                   </div>
                 </div>

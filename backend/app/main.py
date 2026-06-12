@@ -118,11 +118,12 @@ class AIResponseModel(BaseModel):
     confidence: float = Field(..., ge=0.0, le=1.0)
     reason: str
     indicators: Optional[dict] = None
+    timeframe_levels: dict
 
 
 class AnalyzeRequest(BaseModel):
     symbol: str
-    analysis_mode: Literal["scalping", "intraday", "swing", "position"] = "intraday"
+    analysis_mode: Literal["scalping", "intraday", "swing", "position", "macro"] = "intraday"
     wallet_address: str
     signature: str
     nonce: str
@@ -143,9 +144,21 @@ ANALYSIS_MODES = {
     "intraday": {"entry": "1h", "trend": "4h", "label": "Intraday"},
     "swing": {"entry": "4h", "trend": "1d", "label": "Swing"},
     "position": {"entry": "1d", "trend": "1w", "label": "Position"},
+    "macro": {"entry": "1w", "trend": "1M", "label": "Macro"},
 }
 SUPPORTED_MARKET_TIMEFRAMES = {mode["entry"] for mode in ANALYSIS_MODES.values()}
 MIN_ANALYSIS_CANDLES = 35
+
+
+def timeframe_display_name(timeframe: str) -> str:
+    if timeframe == "1M":
+        return "ONE MONTH (1M, not 1 minute)"
+    if timeframe == "1m":
+        return "ONE MINUTE (1m)"
+    if timeframe == "1w":
+        return "ONE WEEK (1W)"
+    return timeframe.upper()
+
 
 ANALYSIS_CREDIT_VAULT_ABI = [
     {
@@ -262,13 +275,20 @@ def get_cached_portfolio_assets(asset_ids: list[str]) -> list[dict]:
 
 
 async def get_latest_price(symbol: str) -> float:
-    exchange = ccxt.bybit({"enableRateLimit": True})
-    exchange.options["defaultType"] = "spot"
-    try:
-        ticker = await run_in_threadpool(exchange.fetch_ticker, symbol)
-        return float(ticker["last"])
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Failed to fetch price: {e}")
+    errors = []
+    providers = (
+        ("bybit", None, "bybit"),
+        ("bybit", "bytick.com", "bybit-bytick"),
+        ("bingx", None, "bingx"),
+    )
+    for exchange_id, hostname, source in providers:
+        try:
+            exchange = create_spot_exchange(exchange_id, hostname)
+            ticker = await run_in_threadpool(exchange.fetch_ticker, symbol)
+            return float(ticker["last"])
+        except Exception as exc:
+            errors.append(f"{source}: {exc}")
+    raise HTTPException(status_code=502, detail=f"Failed to fetch price. {'; '.join(errors)}")
 
 
 def normalize_confidence(value: float) -> float:
@@ -719,10 +739,137 @@ def calculate_indicators(ohlcv: list) -> dict:
     }
 
 
+def calculate_timeframe_levels(ohlcv: list, current_price_override: Optional[float] = None) -> dict:
+    if len(ohlcv) < 5:
+        raise ValueError("At least 5 closed candles are required for support/resistance levels")
+
+    frame = pd.DataFrame(ohlcv[-90:], columns=["timestamp", "open", "high", "low", "close", "volume"])
+    high = frame["high"].astype(float).reset_index(drop=True)
+    low = frame["low"].astype(float).reset_index(drop=True)
+    close = frame["close"].astype(float).reset_index(drop=True)
+    current_price = float(current_price_override) if current_price_override else float(close.iloc[-1])
+
+    pivot_lows: list[float] = []
+    pivot_highs: list[float] = []
+    wing = 2
+    for index in range(wing, len(frame) - wing):
+        low_window = low.iloc[index - wing:index + wing + 1]
+        high_window = high.iloc[index - wing:index + wing + 1]
+        if float(low.iloc[index]) <= float(low_window.min()):
+            pivot_lows.append(float(low.iloc[index]))
+        if float(high.iloc[index]) >= float(high_window.max()):
+            pivot_highs.append(float(high.iloc[index]))
+
+    support_candidates = [price for price in pivot_lows + pivot_highs if price < current_price]
+    resistance_candidates = [price for price in pivot_highs + pivot_lows if price > current_price]
+    support_fallbacks = [float(value) for value in low if float(value) < current_price]
+    resistance_fallbacks = [float(value) for value in high if float(value) > current_price]
+    support_price = max(support_candidates) if support_candidates else (max(support_fallbacks) if support_fallbacks else current_price)
+    resistance_price = min(resistance_candidates) if resistance_candidates else (min(resistance_fallbacks) if resistance_fallbacks else current_price)
+    support_role = "former_resistance" if support_price in pivot_highs else "demand"
+    resistance_role = "former_support" if resistance_price in pivot_lows else "supply"
+
+    return {
+        "current_price": round(current_price, 8),
+        "support_price": round(support_price, 8),
+        "resistance_price": round(resistance_price, 8),
+        "support_distance_percent": round((current_price / support_price - 1) * 100, 2) if support_price > 0 else 0.0,
+        "resistance_distance_percent": round((resistance_price / current_price - 1) * 100, 2) if current_price > 0 else 0.0,
+        "support_status": "at_price" if support_price == current_price else "below_price",
+        "resistance_status": "at_price" if resistance_price == current_price else "above_price",
+        "support_role": support_role,
+        "resistance_role": resistance_role,
+    }
+
+
+def build_timeframe_context(timeframe: str, ohlcv: list, indicators: dict, current_price: float, reference_levels: dict) -> dict:
+    recent_candles = [
+        {
+            "timestamp": int(candle[0]),
+            "open": round(float(candle[1]), 8),
+            "high": round(float(candle[2]), 8),
+            "low": round(float(candle[3]), 8),
+            "close": round(float(candle[4]), 8),
+            "volume": round(float(candle[5]), 4),
+        }
+        for candle in ohlcv[-60:]
+    ]
+    return {
+        "timeframe": timeframe,
+        "live_spot_price": round(current_price, 8),
+        "closed_candle_count": len(ohlcv),
+        "visible_chart_candles": min(len(ohlcv), 100),
+        "recent_ohlcv": recent_candles,
+        "indicators": indicators,
+        "backend_reference_levels": reference_levels,
+    }
+
+
+def render_timeframe_chart(ohlcv: list, symbol: str, timeframe: str) -> bytes:
+    last100 = ohlcv[-100:]
+    frame = pd.DataFrame(last100, columns=["timestamp", "open", "high", "low", "close", "volume"])
+    frame["datetime"] = pd.to_datetime(frame["timestamp"], unit="ms")
+    frame = frame.set_index("datetime")[["open", "high", "low", "close", "volume"]]
+    frame.columns = ["Open", "High", "Low", "Close", "Volume"]
+
+    buffer = io.BytesIO()
+    try:
+        mpf.plot(
+            frame,
+            type="candle",
+            volume=True,
+            style="yahoo",
+            title=f"{symbol} - {timeframe_display_name(timeframe)} - CLOSED CANDLES",
+            ylabel="Price",
+            ylabel_lower="Volume",
+            figsize=(16, 9),
+            savefig=dict(fname=buffer, dpi=150),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to render {timeframe_display_name(timeframe)} chart: {exc}")
+    buffer.seek(0)
+    return buffer.read()
+
+
+def validate_ai_timeframe_levels(candidate_levels: dict, reference_levels: dict) -> dict:
+    validated = {}
+    for timeframe, reference in reference_levels.items():
+        candidate = candidate_levels.get(timeframe, {}) if isinstance(candidate_levels, dict) else {}
+        current_price = float(reference["current_price"])
+        try:
+            support_price = float(candidate["support_price"])
+            resistance_price = float(candidate["resistance_price"])
+        except (KeyError, TypeError, ValueError):
+            support_price = float(reference["support_price"])
+            resistance_price = float(reference["resistance_price"])
+            source = "backend_fallback"
+        else:
+            source = "gemini"
+            if support_price <= 0 or support_price > current_price:
+                support_price = float(reference["support_price"])
+                source = "backend_fallback"
+            if resistance_price <= 0 or resistance_price < current_price:
+                resistance_price = float(reference["resistance_price"])
+                source = "backend_fallback"
+
+        validated[timeframe] = {
+            **reference,
+            "support_price": round(support_price, 8),
+            "resistance_price": round(resistance_price, 8),
+            "support_distance_percent": round((current_price / support_price - 1) * 100, 2),
+            "resistance_distance_percent": round((resistance_price / current_price - 1) * 100, 2),
+            "support_role": "model_selected" if source == "gemini" else reference["support_role"],
+            "resistance_role": "model_selected" if source == "gemini" else reference["resistance_role"],
+            "level_source": source,
+        }
+    return validated
+
+
 def calculate_historical_setup_match(ohlcv: list, horizon: int = 12) -> dict:
     if len(ohlcv) < MIN_ANALYSIS_CANDLES + horizon:
         return {
             "signal": "insufficient",
+            "insufficient_reason": "insufficient_history",
             "similar_cases": 0,
             "bullish_percent": 0.0,
             "bearish_percent": 0.0,
@@ -771,6 +918,7 @@ def calculate_historical_setup_match(ohlcv: list, horizon: int = 12) -> dict:
     if len(forward_returns) < 5:
         return {
             "signal": "insufficient",
+            "insufficient_reason": "no_reliable_match",
             "similar_cases": len(forward_returns),
             "bullish_percent": 0.0,
             "bearish_percent": 0.0,
@@ -790,6 +938,7 @@ def calculate_historical_setup_match(ohlcv: list, horizon: int = 12) -> dict:
     )
     return {
         "signal": signal,
+        "insufficient_reason": None,
         "similar_cases": len(forward_returns),
         "bullish_percent": round(bullish_percent, 1),
         "bearish_percent": round(bearish_percent, 1),
@@ -811,6 +960,8 @@ async def get_gemini_analysis(symbol: str, analysis_mode: str = "intraday") -> d
     mode = ANALYSIS_MODES[analysis_mode]
     entry_timeframe = mode["entry"]
     trend_timeframe = mode["trend"]
+    entry_timeframe_label = timeframe_display_name(entry_timeframe)
+    trend_timeframe_label = timeframe_display_name(trend_timeframe)
     entry_result, trend_result = await asyncio.gather(
         fetch_candles(symbol, entry_timeframe, 301),
         fetch_candles(symbol, trend_timeframe, 121),
@@ -835,22 +986,35 @@ async def get_gemini_analysis(symbol: str, analysis_mode: str = "intraday") -> d
         entry_timeframe: calculate_indicators(ohlcv),
         trend_timeframe: calculate_indicators(trend_ohlcv),
     }
-    historical_setup = calculate_historical_setup_match(ohlcv)
-
-    last100 = ohlcv[-100:]
-    df = pd.DataFrame(last100, columns=["timestamp", "open", "high", "low", "close", "volume"])
-    df["datetime"] = pd.to_datetime(df["timestamp"], unit="ms")
-    df = df.set_index("datetime")[["open", "high", "low", "close", "volume"]]
-    df.columns = ["Open", "High", "Low", "Close", "Volume"]
-
-    buf = io.BytesIO()
     try:
-        mpf.plot(df, type="candle", volume=True, style="yahoo", figsize=(16, 9), savefig=dict(fname=buf, dpi=150))
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to render chart: {exc}")
-
-    buf.seek(0)
-    image_bytes = buf.read()
+        current_reference_price = await get_latest_price(symbol)
+        price_reference = "live_spot"
+    except HTTPException:
+        current_reference_price = float(ohlcv[-1][4])
+        price_reference = "latest_closed_entry_candle"
+    timeframe_levels = {
+        entry_timeframe: calculate_timeframe_levels(ohlcv, current_reference_price),
+        trend_timeframe: calculate_timeframe_levels(trend_ohlcv, current_reference_price),
+    }
+    for levels in timeframe_levels.values():
+        levels["price_reference"] = price_reference
+    historical_setup = calculate_historical_setup_match(ohlcv)
+    entry_context = build_timeframe_context(
+        entry_timeframe,
+        ohlcv,
+        indicators[entry_timeframe],
+        current_reference_price,
+        timeframe_levels[entry_timeframe],
+    )
+    trend_context = build_timeframe_context(
+        trend_timeframe,
+        trend_ohlcv,
+        indicators[trend_timeframe],
+        current_reference_price,
+        timeframe_levels[trend_timeframe],
+    )
+    entry_image_bytes = render_timeframe_chart(ohlcv, symbol, entry_timeframe)
+    trend_image_bytes = render_timeframe_chart(trend_ohlcv, symbol, trend_timeframe)
 
     if genai is None or types is None:
         raise HTTPException(status_code=500, detail="google-genai SDK not available")
@@ -860,42 +1024,70 @@ async def get_gemini_analysis(symbol: str, analysis_mode: str = "intraday") -> d
     except TypeError:
         client = genai.Client()
 
-    image_part = types.Part.from_bytes(data=image_bytes, mime_type="image/png")
+    entry_image_part = types.Part.from_bytes(data=entry_image_bytes, mime_type="image/png")
+    trend_image_part = types.Part.from_bytes(data=trend_image_bytes, mime_type="image/png")
     prompt = (
         f"Analyze the spot market setup for {symbol}. Respond strictly with JSON only (no markdown).\n"
-        "Use the chart together with the exact multi-timeframe indicators below. "
-        f"This is a {mode['label']} analysis. The {trend_timeframe.upper()} timeframe defines the broader trend; "
-        f"the {entry_timeframe.upper()} timeframe helps time an entry or exit. "
+        "You received two separately labeled chart screenshots. Each screenshot is immediately followed by a JSON block "
+        "that digitizes its exact timeframe data. Analyze each screenshot together with only its adjacent JSON block, then "
+        "combine both timeframes into one decision. "
+        f"This is a {mode['label']} analysis. The {trend_timeframe_label} timeframe defines the broader trend; "
+        f"the {entry_timeframe_label} timeframe helps time an entry or exit. "
         "Explicitly consider whether RSI and Stochastic are overbought/oversold and whether MACD is bullish/bearish. "
         "Return BUY only for a clearly confirmed bullish setup with upside room toward resistance. "
-        f"Return SELL only for a clearly confirmed bearish setup where both {trend_timeframe.upper()} and "
-        f"{entry_timeframe.upper()} support the exit, "
+        f"Return SELL only for a clearly confirmed bearish setup where both {trend_timeframe_label} and "
+        f"{entry_timeframe_label} support the exit, "
         "there is downside room toward support, and the market is not already exhausted in deep oversold conditions. "
         "SELL means reduce or exit spot exposure; it does not mean opening a short position. "
-        f"If {entry_timeframe.upper()} and {trend_timeframe.upper()} conflict or neither direction is clearly confirmed, "
+        f"If {entry_timeframe_label} and {trend_timeframe_label} conflict or neither direction is clearly confirmed, "
         "reduce confidence and return HOLD.\n"
-        f"Indicators: {json.dumps(indicators, separators=(',', ':'))}\n"
-        f"Historical setup match on the {entry_timeframe.upper()} timeframe: "
+        f"Historical setup match on the {entry_timeframe_label} timeframe: "
         f"{json.dumps(historical_setup, separators=(',', ':'))}. "
         "Use this as supporting statistical evidence, not as a standalone decision.\n"
+        f"Choose the nearest meaningful support below live spot price and resistance above live spot price separately for "
+        f"{entry_timeframe_label} and {trend_timeframe_label}. Use visible market structure, repeated reactions, consolidation "
+        "zones, wicks, and volume. backend_reference_levels are only a numeric cross-check, not mandatory answers. "
+        "If your visual level differs, return your visual level. The backend will reject only geometrically invalid levels.\n"
         "Return exactly the following schema:\n"
-        "{\n  \"action\": \"BUY\" | \"SELL\" | \"HOLD\",\n  \"support_price\": number,\n  \"resistance_price\": number,\n  \"confidence\": number,\n  \"reason\": string\n}\n"
-        f"The reason must clearly explain how the {trend_timeframe.upper()} trend, {entry_timeframe.upper()} setup, "
+        "{\n  \"action\": \"BUY\" | \"SELL\" | \"HOLD\",\n  \"support_price\": number,\n  \"resistance_price\": number,\n"
+        f"  \"timeframe_levels\": {{\"{entry_timeframe}\": {{\"support_price\": number, \"resistance_price\": number}}, "
+        f"\"{trend_timeframe}\": {{\"support_price\": number, \"resistance_price\": number}}}},\n"
+        "  \"confidence\": number,\n  \"reason\": string\n}\n"
+        f"The reason must clearly explain how the {trend_timeframe_label} trend, {entry_timeframe_label} setup, "
         "RSI, MACD, Stochastic, "
-        "support/resistance, and volume contributed to the final decision. "
+        f"{entry_timeframe_label} support/resistance, {trend_timeframe_label} support/resistance, and volume "
+        "contributed to the final decision. "
         "Mention conflicts between indicators when present. Keep the explanation readable in 3-5 sentences. "
         "Provide numeric prices in the quote currency. "
         "IMPORTANT: confidence must be a decimal number from 0.0 to 1.0 (for example 0.60), NOT 60."
     )
 
+    timeframe_level_schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["support_price", "resistance_price"],
+        "properties": {
+            "support_price": {"type": "number", "exclusiveMinimum": 0},
+            "resistance_price": {"type": "number", "exclusiveMinimum": 0},
+        },
+    }
     response_schema = {
         "type": "object",
         "additionalProperties": False,
-        "required": ["action", "support_price", "resistance_price", "confidence", "reason"],
+        "required": ["action", "support_price", "resistance_price", "timeframe_levels", "confidence", "reason"],
         "properties": {
             "action": {"type": "string", "enum": ["BUY", "SELL", "HOLD"]},
             "support_price": {"type": "number", "exclusiveMinimum": 0},
             "resistance_price": {"type": "number", "exclusiveMinimum": 0},
+            "timeframe_levels": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": [entry_timeframe, trend_timeframe],
+                "properties": {
+                    entry_timeframe: timeframe_level_schema,
+                    trend_timeframe: timeframe_level_schema,
+                },
+            },
             "confidence": {"type": "number", "minimum": 0, "maximum": 1},
             "reason": {"type": "string"},
         },
@@ -913,7 +1105,15 @@ async def get_gemini_analysis(symbol: str, analysis_mode: str = "intraday") -> d
             client,
             model_name,
             fallback_model_name,
-            [image_part, prompt],
+            [
+                f"ENTRY TIMEFRAME SCREENSHOT: {symbol} {entry_timeframe_label}",
+                entry_image_part,
+                f"ENTRY TIMEFRAME JSON:\n{json.dumps(entry_context, separators=(',', ':'))}",
+                f"TREND TIMEFRAME SCREENSHOT: {symbol} {trend_timeframe_label}",
+                trend_image_part,
+                f"TREND TIMEFRAME JSON:\n{json.dumps(trend_context, separators=(',', ':'))}",
+                prompt,
+            ],
             config,
         )
     except HTTPException:
@@ -926,6 +1126,9 @@ async def get_gemini_analysis(symbol: str, analysis_mode: str = "intraday") -> d
         parsed = normalize_gemini_response(parsed)
         ai = AIResponseModel.parse_obj(parsed)
         result = ai.dict()
+        result["timeframe_levels"] = validate_ai_timeframe_levels(result["timeframe_levels"], timeframe_levels)
+        result["support_price"] = result["timeframe_levels"][entry_timeframe]["support_price"]
+        result["resistance_price"] = result["timeframe_levels"][entry_timeframe]["resistance_price"]
         result["indicators"] = indicators
         result["historical_setup"] = historical_setup
         result["analysis_mode"] = analysis_mode
@@ -933,6 +1136,7 @@ async def get_gemini_analysis(symbol: str, analysis_mode: str = "intraday") -> d
         result["model"] = used_model_name
         result["entry_timeframe"] = entry_timeframe
         result["trend_timeframe"] = trend_timeframe
+        result["level_price_reference"] = price_reference
         result["timeframe_candle_counts"] = {
             entry_timeframe: len(ohlcv),
             trend_timeframe: len(trend_ohlcv),
