@@ -238,6 +238,14 @@ function formatCurrency(value: number) {
   return `$${value.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',')}`
 }
 
+function formatMarketPrice(value: number) {
+  const decimals = value >= 100 ? 2 : value >= 1 ? 4 : value >= 0.01 ? 6 : 8
+  return `$${value.toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: decimals,
+  })}`
+}
+
 function formatSignedCurrency(value: number) {
   return `${value >= 0 ? '+' : '-'}${formatCurrency(Math.abs(value))}`
 }
@@ -256,7 +264,7 @@ function formatTimeframe(timeframe: string) {
 
 function App() {
   const chartContainerRef = useRef<HTMLDivElement | null>(null)
-  const [activeView, setActiveView] = useState<'terminal' | 'performance' | 'portfolio'>('terminal')
+  const [activeView, setActiveView] = useState<'terminal' | 'swap' | 'performance' | 'portfolio'>('terminal')
   const [analysisMode, setAnalysisMode] = useState<AnalysisMode>('intraday')
   const [selectedSymbol, setSelectedSymbol] = useState('MNT/USDT')
   const [marketCatalog, setMarketCatalog] = useState<MarketCatalogItem[]>(
@@ -451,11 +459,12 @@ function App() {
   }, [selectedSymbol, analysisMode])
 
   useEffect(() => {
-    if (!chartContainerRef.current) return
+    if (activeView !== 'terminal' || !chartContainerRef.current) return
 
-    const chartHeight = chartContainerRef.current.clientHeight || 280
-    const chart = createChart(chartContainerRef.current, {
-      width: chartContainerRef.current.clientWidth,
+    const chartContainer = chartContainerRef.current
+    const chartHeight = chartContainer.clientHeight || 280
+    const chart = createChart(chartContainer, {
+      width: chartContainer.clientWidth,
       height: chartHeight,
       layout: {
         background: { color: '#07101f' },
@@ -508,19 +517,22 @@ function App() {
     }
 
     const handleResize = () => {
-      if (!chartContainerRef.current) return
       chart.applyOptions({
-        width: chartContainerRef.current.clientWidth,
-        height: chartContainerRef.current.clientHeight || chartHeight,
+        width: chartContainer.clientWidth,
+        height: chartContainer.clientHeight || chartHeight,
       })
     }
 
+    const resizeObserver = new ResizeObserver(handleResize)
+    resizeObserver.observe(chartContainer)
+    requestAnimationFrame(handleResize)
     window.addEventListener('resize', handleResize)
     return () => {
+      resizeObserver.disconnect()
       window.removeEventListener('resize', handleResize)
       chart.remove()
     }
-  }, [candles])
+  }, [activeView, candles])
 
   const handleAgentAction = async (action: 'start' | 'stop') => {
     setControlLoading(true)
@@ -1225,6 +1237,7 @@ function App() {
           </button>
           <nav className="flex flex-wrap items-center gap-2 text-sm">
             <button type="button" onClick={() => setActiveView('terminal')} className={`nav-pill ${activeView === 'terminal' ? 'active' : ''}`}>Terminal</button>
+            <button type="button" onClick={() => setActiveView('swap')} className={`nav-pill ${activeView === 'swap' ? 'active' : ''}`}>Swap</button>
             <button type="button" onClick={() => setActiveView('performance')} className={`nav-pill ${activeView === 'performance' ? 'active' : ''}`}>AI Performance</button>
             <button type="button" onClick={() => setActiveView('portfolio')} className={`nav-pill ${activeView === 'portfolio' ? 'active' : ''}`}>Portfolio</button>
             <a className="nav-pill" href="https://github.com/hanto777/mantle-ai-trader-agent#readme" target="_blank" rel="noreferrer">Docs</a>
@@ -1336,8 +1349,9 @@ function App() {
       )}
 
       <main className="relative z-10 mx-auto max-w-[1500px] space-y-6 px-4 py-6 lg:px-8">
-        <section className={`${activeView === 'terminal' ? 'grid' : 'hidden'} market-workspace gap-6 xl:grid-cols-[0.95fr_1.45fr]`}>
-          <div className="market-left-panel glass-panel p-4">
+        <section className={`${activeView === 'terminal' || activeView === 'swap' ? 'grid' : 'hidden'} market-workspace gap-6 ${activeView === 'terminal' ? 'xl:grid-cols-[0.95fr_1.45fr]' : 'swap-workspace'}`}>
+          <div className={`market-left-panel glass-panel p-4 ${activeView === 'swap' ? 'swap-aggregator-panel' : ''}`}>
+            {activeView === 'terminal' && <>
             <div className="mb-3 flex items-start justify-between gap-4">
               <div>
                 <div className="flex flex-wrap items-center gap-2">
@@ -1390,7 +1404,7 @@ function App() {
                 </div>
                 <div className="mt-2 flex items-baseline gap-3">
                   <span className="font-mono text-2xl font-semibold text-white">
-                    {latestPrice ? `$${latestPrice.toFixed(6)}` : 'Loading'}
+                    {latestPrice ? formatMarketPrice(latestPrice) : 'Loading'}
                   </span>
                   <span className={marketChange >= 0 ? 'text-emerald-300' : 'text-red-300'}>
                     {marketChange >= 0 ? '+' : ''}{marketChange.toFixed(2)}%
@@ -1421,6 +1435,57 @@ function App() {
               <div className="stat-tile"><span>Source</span><strong>{marketInfo.exchange || '-'}</strong></div>
             </div>
 
+            <div className="strategy-matrix mt-3">
+              <div className="strategy-matrix-head">
+                <div>
+                  <div className="font-mono text-xs uppercase tracking-[0.2em] text-cyan-300">Strategy &amp; timeframe matrix</div>
+                  <p>Select a trading horizon. The agent combines an entry timeframe with a broader trend context.</p>
+                </div>
+                <span className="mini-badge violet">{selectedMode.label} active</span>
+              </div>
+              <div className="strategy-matrix-grid">
+                <div className="strategy-matrix-header">Trading style</div>
+                <div className="strategy-matrix-header">Entry / local timeframe</div>
+                <div className="strategy-matrix-header">Higher / trend timeframe</div>
+                {([
+                  ['scalping', 'Scalping', 'Fast execution and very short setups'],
+                  ['intraday', 'Short-Term Trading', 'Same-day directional opportunities'],
+                  ['swing', 'Medium-Term Trading', 'Multi-day swing opportunities'],
+                  ['position', 'Position Trading', 'Broader multi-week positioning'],
+                  ['macro', 'Long-Term Investment', 'Macro trend and cycle positioning'],
+                ] as [AnalysisMode, string, string][]).map(([mode, label, description]) => {
+                  const config = ANALYSIS_MODES[mode]
+                  return (
+                    <button
+                      key={mode}
+                      type="button"
+                      className={`strategy-matrix-row ${analysisMode === mode ? 'active' : ''}`}
+                      onClick={() => setAnalysisMode(mode)}
+                      disabled={aiLoading}
+                    >
+                      <span><strong>{label}</strong><small>{description}</small></span>
+                      <span><strong>{formatTimeframe(config.entry)}</strong><small>Entry / local structure</small></span>
+                      <span><strong>{formatTimeframe(config.trend)}</strong><small>Context / trend filter</small></span>
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+            </>}
+
+            {activeView === 'swap' && <>
+            <div className="swap-page-hero">
+              <div>
+                <span className="mini-badge live">Mantle route intelligence</span>
+                <h2>Swap Aggregator</h2>
+                <p>Compare live Mantle DEX routes and prepare a transparent trade setup from one non-custodial terminal.</p>
+              </div>
+              <div className="swap-page-status">
+                <span>Current pair</span>
+                <strong>MNT / USDT</strong>
+                <small>Read-only preview</small>
+              </div>
+            </div>
             <div className="dex-terminal mt-3">
               <div className="dex-terminal-head">
                 <div>
@@ -1590,9 +1655,10 @@ function App() {
                 {' '}Real approvals, signatures, and swaps remain disabled.
               </div>
             </div>
+            </>}
           </div>
 
-          <div className={`glass-panel relative overflow-hidden p-5 reasoning-panel ${reasoningPhase}`}>
+          <div className={`${activeView === 'terminal' ? 'block' : 'hidden'} glass-panel relative overflow-hidden p-5 reasoning-panel ${reasoningPhase}`}>
             <div className="mb-4 flex items-center justify-between gap-4">
               <div className="flex items-center gap-3">
                 <div className="brain-chip">AI</div>
